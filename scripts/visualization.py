@@ -13,17 +13,12 @@ import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser(description='Visualize MOCU-OED results')
 parser.add_argument('--N', type=int, default=5, help='Number of oscillators')
 parser.add_argument('--update_cnt', type=int, default=10, help='Number of updates')
-parser.add_argument('--result_folder', type=str, default=None, help='Results directory (if None, uses lambda-based folder)')
-parser.add_argument('--lambda_value', type=int, default=100, help='Lambda parameter value (for folder organization)')
+parser.add_argument('--result_folder', type=str, required=True, help='Results directory to visualize')
 args = parser.parse_args()
 
 update_cnt = args.update_cnt
 N = args.N
-# Use lambda-based folder if result_folder not specified
-if args.result_folder is None:
-    resultFolder = f'./resultsOnLambda_{args.lambda_value}/'
-else:
-    resultFolder = args.result_folder
+resultFolder = args.result_folder
 
 # Keep iODE in list for index consistency, even though it's not used in experiments
 listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']

@@ -37,20 +37,11 @@ node_modules
 *.bak
 
 # Project-specific: Experiment outputs (large files)
-# Data files (datasets)
-data/*.pth
-data/*.json
-data/*.txt
+# All experiments folder - contains data, models, and results
+experiments/
 
-# Model files (trained models)
-models/*/
-models/**/*.pth
-models/**/*.xlsx
-models/**/*.png
-
-# Results files (experiment outputs)
+# Legacy folders (if they exist)
+data/
+models/
 results/
 Experiment/
-
-# PyTorch checkpoint files
-*.pth

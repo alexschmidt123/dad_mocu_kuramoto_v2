@@ -120,8 +120,10 @@ def main():
     EPOCH = args.EPOCH if not args.test_only else 1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    if not os.path.exists('../models/' + args.name):
-        os.makedirs('../models/' + args.name)
+    # Model folder is created by run.sh, but ensure it exists
+    model_dir = '../models/' + args.name
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
     train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, args.name)
     print('Making Model...')
     with torch.backends.cudnn.flags(enabled=False):

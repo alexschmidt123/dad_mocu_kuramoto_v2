@@ -27,10 +27,31 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
+# Extract config name from path (e.g., "N5_config" from "configs/N5_config.yaml")
+CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
+
+# Generate timestamp for this run
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+
+# Create unified experiment ID: config_name_timestamp
+EXPERIMENT_ID="${CONFIG_NAME}_${TIMESTAMP}"
+
+# Create experiment folder structure
+EXPERIMENT_ROOT="../experiments/${EXPERIMENT_ID}/"
+DATA_FOLDER="${EXPERIMENT_ROOT}data/"
+MODEL_FOLDER="${EXPERIMENT_ROOT}models/"
+RESULT_FOLDER="${EXPERIMENT_ROOT}results/"
+
+# Create all folders
+mkdir -p "$DATA_FOLDER"
+mkdir -p "$MODEL_FOLDER"
+mkdir -p "$RESULT_FOLDER"
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}MOCU-OED Experiment Workflow${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "Config file: ${YELLOW}$CONFIG_FILE${NC}"
+echo -e "Experiment folder: ${YELLOW}$EXPERIMENT_ROOT${NC}"
 if [ -n "$N_GLOBAL_UPDATED" ]; then
     echo -e "${BLUE}[Re-execution after N_global update]${NC}"
 fi
@@ -86,18 +107,17 @@ fi
 echo ""
 echo -e "${GREEN}[Step 1/4]${NC} Checking dataset..."
 
-# Check if dataset already exists
-ACTUAL_TRAIN_FILE=$(ls data/*_${N}o_train.pth 2>/dev/null | tail -1)
+TRAIN_FILE="${DATA_FOLDER}${TRAIN_SIZE}_${N}o_train.pth"
 
-if [ -n "$ACTUAL_TRAIN_FILE" ]; then
-    echo -e "${GREEN}✓${NC} Dataset already exists: $ACTUAL_TRAIN_FILE"
+if [ -f "$TRAIN_FILE" ]; then
+    echo -e "${GREEN}✓${NC} Dataset already exists: $TRAIN_FILE"
     echo "  Skipping data generation..."
 else
     echo "  Generating dataset (this may take time)..."
     
     cd scripts
     
-    CMD="python data_generation.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX"
+    CMD="python data_generation.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $DATA_FOLDER"
     if [ "$SAVE_JSON" = "true" ]; then
         CMD="$CMD --save_json"
     fi
@@ -105,14 +125,12 @@ else
     eval $CMD
     cd ..
     
-    # Find the actual training file created
-    ACTUAL_TRAIN_FILE=$(ls data/*_${N}o_train.pth 2>/dev/null | tail -1)
-    if [ -z "$ACTUAL_TRAIN_FILE" ]; then
-        echo -e "${RED}Error: Training file not found in data/!${NC}"
+    if [ ! -f "$TRAIN_FILE" ]; then
+        echo -e "${RED}Error: Training file not found: $TRAIN_FILE${NC}"
         exit 1
     fi
     
-    echo -e "${GREEN}✓${NC} Dataset generated: $ACTUAL_TRAIN_FILE"
+    echo -e "${GREEN}✓${NC} Dataset generated: $TRAIN_FILE"
 fi
 
 # Step 2: Train model
@@ -122,22 +140,25 @@ echo "  This may take 1-2 hours..."
 
 cd scripts
 python training.py \
-    --name $TRAINED_MODEL_NAME \
-    --data_path ../$ACTUAL_TRAIN_FILE \
+    --name "$EXPERIMENT_ID" \
+    --data_path "$TRAIN_FILE" \
     --EPOCH $EPOCHS \
     --Constrain_weight $CONSTRAIN_WEIGHT
 cd ..
 
-echo -e "${GREEN}✓${NC} Model trained: models/$TRAINED_MODEL_NAME/model.pth"
+echo -e "${GREEN}✓${NC} Model trained: ${MODEL_FOLDER}model.pth"
 
-# Step 3: Export trained model identifier for evaluation scripts
+# Step 3: Export configuration for evaluation scripts
 echo ""
-echo -e "${GREEN}[Step 3/4]${NC} Configuring trained model path..."
+echo -e "${GREEN}[Step 3/4]${NC} Configuring experiment paths..."
 
-# Export trained model identifier so Python evaluation scripts can load the correct model
-export MOCU_MODEL_NAME=$TRAINED_MODEL_NAME
+# Export experiment ID so Python scripts can load the correct model
+export MOCU_MODEL_NAME="$EXPERIMENT_ID"
+# Export result folder path so evaluation scripts know where to save
+export RESULT_FOLDER="$RESULT_FOLDER"
 
-echo -e "${GREEN}✓${NC} Trained model identifier: $TRAINED_MODEL_NAME (via MOCU_MODEL_NAME env var)"
+echo -e "${GREEN}✓${NC} Experiment ID: $EXPERIMENT_ID (via MOCU_MODEL_NAME)"
+echo -e "${GREEN}✓${NC} Result folder: $RESULT_FOLDER (via RESULT_FOLDER)"
 
 # Step 4: Run experiments
 echo ""
@@ -151,17 +172,17 @@ cd scripts
 python evaluation.py
 cd ..
 
-echo -e "${GREEN}✓${NC} Experiments complete: scripts/resultsOnLambda_100/"
+echo -e "${GREEN}✓${NC} Experiments complete: $RESULT_FOLDER"
 
 # Step 5: Visualize results
 echo ""
 echo -e "${GREEN}[Step 5/4]${NC} Generating visualizations..."
 
 cd scripts
-python visualization.py --N $N --update_cnt 10 --lambda_value 100
+python visualization.py --N $N --update_cnt 10 --result_folder "$RESULT_FOLDER"
 cd ..
 
-echo -e "${GREEN}✓${NC} Plots generated: scripts/resultsOnLambda_100/MOCU_${N}.png, scripts/resultsOnLambda_100/timeComplexity_${N}.png"
+echo -e "${GREEN}✓${NC} Plots generated: ${RESULT_FOLDER}MOCU_${N}.png, ${RESULT_FOLDER}timeComplexity_${N}.png"
 
 # Summary
 echo ""
@@ -169,12 +190,19 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✓ Workflow Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${BLUE}Output:${NC}"
-echo "  Dataset:  data/${TRAIN_SIZE}_${N}o_train.pth"
-echo "  Model:    models/$TRAINED_MODEL_NAME/model.pth"
-echo "  Results:  scripts/resultsOnLambda_100/*_MOCU.txt"
-echo "  Plots:    scripts/resultsOnLambda_100/MOCU_${N}.png"
-echo "            scripts/resultsOnLambda_100/timeComplexity_${N}.png"
+echo -e "${BLUE}Experiment: ${EXPERIMENT_ROOT}${NC}"
+echo ""
+echo -e "${BLUE}Structure:${NC}"
+echo "  ${EXPERIMENT_ROOT}"
+echo "  ├── data/"
+echo "  │   └── ${TRAIN_SIZE}_${N}o_train.pth"
+echo "  ├── models/"
+echo "  │   ├── model.pth"
+echo "  │   └── statistics.pth"
+echo "  └── results/"
+echo "      ├── *_MOCU.txt"
+echo "      ├── MOCU_${N}.png"
+echo "      └── timeComplexity_${N}.png"
 echo ""
 echo -e "${GREEN}All done!${NC}"
 

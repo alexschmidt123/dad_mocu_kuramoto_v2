@@ -173,7 +173,7 @@ def main():
                         help='Number of samples per coupling type (total = 2 * samples_per_type)')
     parser.add_argument('--K_max', type=int, default=20480, help='Monte Carlo samples for MOCU')
     parser.add_argument('--train_size', type=int, default=70000, help='Training set size')
-    parser.add_argument('--output_dir', type=str, default='../data', help='Output directory')
+    parser.add_argument('--output_dir', type=str, default='../data/', help='Output directory (with trailing slash)')
     parser.add_argument('--save_json', action='store_true', help='Save intermediate JSON files')
     args = parser.parse_args()
     

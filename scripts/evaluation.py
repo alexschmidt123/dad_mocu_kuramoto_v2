@@ -29,10 +29,9 @@ if __name__ == '__main__':
     K_max = 20480
     random_a = 1
     
-    # Lambda parameter (constrain weight used in training)
-    # This organizes results by the lambda value used
-    lambda_value = 100  # Corresponds to Constrain_weight = 0.0001 = 10^-4
-    result_folder = f'./resultsOnLambda_{lambda_value}/'
+    # Get result folder name from environment variable (set by run.sh)
+    # Format: config_name_YYYYMMDD_HHMMSS
+    result_folder = os.getenv('RESULT_FOLDER', '../results/default/')
     os.makedirs(result_folder, exist_ok=True)
 
     # Time must be larger than 250 for N = 5

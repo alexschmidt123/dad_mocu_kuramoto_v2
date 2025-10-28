@@ -70,9 +70,11 @@ AccelerateOED/
 │   ├── evaluation.py           # Run OED experiments
 │   └── visualization.py        # Generate plots
 ├── src/                         # Source code
-├── data/                        # [Auto-created] Datasets
-├── models/                      # [Auto-created] Trained models
-└── results/                     # [Auto-created] Results
+└── experiments/                 # [Auto-created] All experiment outputs
+    └── N5_config_20250128_143022/    # Each run gets timestamped folder
+        ├── data/                # Dataset for this experiment
+        ├── models/              # Trained model for this experiment
+        └── results/             # Results and plots for this experiment
 ```
 
 ## Quick Start
