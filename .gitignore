@@ -1,0 +1,56 @@
+# Folder view configuration files
+.DS_Store
+Desktop.ini
+
+# Thumbnail cache files
+._*
+Thumbs.db
+
+# Files that might appear on external disks
+.Spotlight-V100
+.Trashes
+
+# Compiled Python files
+*.pyc
+
+# Compiled C++ files
+*.out
+
+# Application specific files
+venv
+node_modules
+.sass-cache
+
+# Temp File
+*.swp
+*.swa
+*.swo
+
+# github merge file
+*.orig
+
+#vscode 
+.vscode
+.idea
+
+# Backup files from sed
+*.bak
+
+# Project-specific: Experiment outputs (large files)
+# Data files (datasets)
+data/*.pth
+data/*.json
+data/*.txt
+
+# Model files (trained models)
+models/*/
+models/**/*.pth
+models/**/*.xlsx
+models/**/*.png
+
+# Results files (experiment outputs)
+results/
+Experiment/
+
+# PyTorch checkpoint files
+*.pth

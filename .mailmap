@@ -1,0 +1,5 @@
+# Git mailmap - consolidates contributor identities
+# Format: Preferred Name <preferred@email.com> <alternate@email.com>
+
+Gaoming Lin <gaominglins@gmail.com> <g.lin@ecen-80r5x04.engr.tamu.edu>
+

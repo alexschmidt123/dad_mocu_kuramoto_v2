@@ -1,0 +1,42 @@
+# SUPER FAST configuration for component verification
+# This config file (fast_config.yaml) defines a lightweight experiment configuration
+# This config uses MINIMAL parameters just to verify all components work
+# The 'model_name' below is the identifier for where the trained model will be saved
+# Estimated time: ~3-5 minutes total (vs 30 min for fast, 5-30 hours for full)
+# ⚠️ NOT for actual experiments - only for testing!
+
+# System parameters
+N: 5
+N_global: 6  # N + 1 for CUDA kernel
+
+# Dataset generation (MINIMAL for quick verification)
+dataset:
+  samples_per_type: 150    # Generate 300 total (expect ~150 valid after sync filtering)
+  train_size: 100          # 100 train samples
+  K_max: 1024              # Minimal: 1024 Monte Carlo samples (vs 20480 full)
+  save_json: false
+
+# Training parameters (MINIMAL for quick verification)
+training:
+  model_name: "fast_test"  # Identifier for trained model directory (models/fast_test/)
+  epochs: 10               # Minimal: just verify training works
+  constrain_weight: 0.0001
+  batch_size: 32           # Small batch for small dataset
+  learning_rate: 0.001
+
+# Experiment parameters (MINIMAL for quick verification)
+experiment:
+  num_simulations: 1       # Single run only
+  update_count: 3          # Just 3 iterations
+  it_idx: 3                # Minimal iterations
+  K_max: 1024              # Match dataset K_max
+  methods:
+    - "iMP"                # Best method
+    - "RANDOM"             # Baseline (fastest)
+
+# Paths (relative to project root)
+paths:
+  data_dir: "data"
+  models_dir: "models"
+  results_dir: "results"
+
