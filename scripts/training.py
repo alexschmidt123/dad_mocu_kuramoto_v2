@@ -133,11 +133,11 @@ def main():
                 models = []
                 for model_path in model_paths:
                     m = Net().cuda()
-                    m.load_state_dict(torch.load('../models' + model_path + '/model.pth'))
+                    m.load_state_dict(torch.load('../models/' + model_path + '/model.pth'))
                     models.append(m)
             else:
                 # Load pretrained weights into the model
-                model.load_state_dict(torch.load('../models' + args.pretrain + '/model.pth'))
+                model.load_state_dict(torch.load('../models/' + args.pretrain + '/model.pth'))
 
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
