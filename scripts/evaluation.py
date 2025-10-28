@@ -50,7 +50,8 @@ if __name__ == '__main__':
     w[4] = 5.8333
 
     # All implemented strategies
-    listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
+    # Note: iODE is too slow and not used in original experiments
+    listMethods = ['iNN', 'NN', 'ODE', 'ENTROPY', 'RANDOM']
     numberOfSimulationsPerMethod = 10
     numberOfVaildSimulations = 0
     numberOfSimulations = 0
@@ -169,13 +170,6 @@ if __name__ == '__main__':
             elif listMethods[indexMethod] == 'ENTROPY':
                 MOCUCurve, experimentSequence, timeComplexity = findEntropySequence(criticalK, isSynchronized,
                     MOCUInitial, K_max, w, N, deltaT, MReal, TReal, aLowerUpdated, aUpperUpdated, it_idx, update_cnt)
-
-            elif listMethods[indexMethod] == 'iODE':
-                iterative = True
-                print("iterative: ", iterative)
-                MOCUCurve, experimentSequence, timeComplexity = findMOCUSequence(criticalK, isSynchronized, MOCUInitial,
-                    K_max, w, N, deltaT, MVirtual, MReal, TVirtual, TReal, aLowerUpdated, aUpperUpdated, it_idx,
-                    update_cnt, iterative=iterative)
 
             elif listMethods[indexMethod] == 'ODE':
                 iterative = False

@@ -25,6 +25,7 @@ if args.result_folder is None:
 else:
     resultFolder = args.result_folder
 
+# Keep iODE in list for index consistency, even though it's not used in experiments
 listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
 
 # Detect which methods have results by checking which files exist
