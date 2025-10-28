@@ -7,6 +7,7 @@
 import sys
 import time
 from pathlib import Path
+import os
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +28,12 @@ if __name__ == '__main__':
     N = 5
     K_max = 20480
     random_a = 1
+    
+    # Lambda parameter (constrain weight used in training)
+    # This organizes results by the lambda value used
+    lambda_value = 100  # Corresponds to Constrain_weight = 0.0001 = 10^-4
+    result_folder = f'./resultsOnLambda_{lambda_value}/'
+    os.makedirs(result_folder, exist_ok=True)
 
     # Time must be larger than 250 for N = 5
     deltaT = 1.0 / 160.0
@@ -42,8 +49,8 @@ if __name__ == '__main__':
     w[3] = 2.0000
     w[4] = 5.8333
 
-    # Only use implemented strategies (ODE requires missing mocu_strategy.py)
-    listMethods = ['iMP', 'MP', 'ENTROPY', 'RANDOM']
+    # All implemented strategies
+    listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
     numberOfSimulationsPerMethod = 10
     numberOfVaildSimulations = 0
     numberOfSimulations = 0
@@ -63,9 +70,9 @@ if __name__ == '__main__':
     aInitialUpper[1, 3:5] = aInitialUpper[1, 3:5] * 0.45
     aInitialLower[1, 3:5] = aInitialLower[1, 3:5] * 0.45
 
-    np.savetxt('../results/paramNaturalFrequencies.txt', w, fmt='%.64e')
-    np.savetxt('../results/paramInitialUpper.txt', aInitialUpper, fmt='%.64e')
-    np.savetxt('../results/paramInitialLower.txt', aInitialLower, fmt='%.64e')
+    np.savetxt(result_folder + 'paramNaturalFrequencies.txt', w, fmt='%.64e')
+    np.savetxt(result_folder + 'paramInitialUpper.txt', aInitialUpper, fmt='%.64e')
+    np.savetxt(result_folder + 'paramInitialLower.txt', aInitialLower, fmt='%.64e')
 
     for i in range(N):
         for j in range(i + 1, N):
@@ -140,8 +147,8 @@ if __name__ == '__main__':
         # else:
         #     print('                     Favorable system has been found')
 
-        np.savetxt('../results/paramCouplingStrength' + str(numberOfVaildSimulations) + '.txt', a, fmt='%.64e')
-        test = np.loadtxt('../results/paramCouplingStrength' + str(numberOfVaildSimulations) + '.txt')
+        np.savetxt(result_folder + 'paramCouplingStrength' + str(numberOfVaildSimulations) + '.txt', a, fmt='%.64e')
+        test = np.loadtxt(result_folder + 'paramCouplingStrength' + str(numberOfVaildSimulations) + '.txt')
 
         for indexMethod in range(len(listMethods)):
             timeMOCU = time.time()
@@ -178,7 +185,7 @@ if __name__ == '__main__':
                             update_cnt, iterative=iterative)
 
             else:
-                if listMethods[indexMethod] == 'iMP':
+                if listMethods[indexMethod] == 'iNN':
                     iterative = True
                 else:
                     iterative = False
@@ -195,9 +202,9 @@ if __name__ == '__main__':
                             timeComplexity, MOCUInitial, K_max, w, N, deltaT, MVirtual, MReal, TVirtual, TReal,
                             aLowerUpdated, aUpperUpdated, it_idx, update_cnt)
 
-            outMOCUFile = open('../results/' + listMethods[indexMethod] + '_MOCU.txt', 'a')
-            outTimeFile = open('../results/' + listMethods[indexMethod] + '_timeComplexity.txt', 'a')
-            outSequenceFile = open('../results/' + listMethods[indexMethod] + '_sequence.txt', 'a')
+            outMOCUFile = open(result_folder + listMethods[indexMethod] + '_MOCU.txt', 'a')
+            outTimeFile = open(result_folder + listMethods[indexMethod] + '_timeComplexity.txt', 'a')
+            outSequenceFile = open(result_folder + listMethods[indexMethod] + '_sequence.txt', 'a')
             np.savetxt(outMOCUFile, MOCUCurve.reshape(1, MOCUCurve.shape[0]), delimiter="\t")
             np.savetxt(outTimeFile, timeComplexity.reshape(1, timeComplexity.shape[0]), delimiter="\t")
             np.savetxt(outSequenceFile, experimentSequence, delimiter="\t")
@@ -208,5 +215,7 @@ if __name__ == '__main__':
         numberOfVaildSimulations += 1
     mean_MOCU_matrix = np.mean(save_MOCU_matrix, axis=2)
     print(mean_MOCU_matrix)
-    outMOCUFile = open('../results/' + 'mean_MOCU.txt', 'a')
+    outMOCUFile = open(result_folder + 'mean_MOCU.txt', 'a')
     np.savetxt(outMOCUFile, mean_MOCU_matrix, delimiter="\t")
+    
+    print(f"\n✓ Results saved to: {result_folder}")

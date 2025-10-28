@@ -148,21 +148,20 @@ echo "    - Methods to run (line 43)"
 echo ""
 
 cd scripts
-mkdir -p ../results
 python evaluation.py
 cd ..
 
-echo -e "${GREEN}✓${NC} Experiments complete: results/"
+echo -e "${GREEN}✓${NC} Experiments complete: scripts/resultsOnLambda_100/"
 
 # Step 5: Visualize results
 echo ""
 echo -e "${GREEN}[Step 5/4]${NC} Generating visualizations..."
 
 cd scripts
-python visualization.py --N $N --update_cnt 10 --result_folder ../results/
+python visualization.py --N $N --update_cnt 10 --lambda_value 100
 cd ..
 
-echo -e "${GREEN}✓${NC} Plots generated: results/MOCU_${N}.png, results/timeComplexity_${N}.png"
+echo -e "${GREEN}✓${NC} Plots generated: scripts/resultsOnLambda_100/MOCU_${N}.png, scripts/resultsOnLambda_100/timeComplexity_${N}.png"
 
 # Summary
 echo ""
@@ -173,9 +172,9 @@ echo ""
 echo -e "${BLUE}Output:${NC}"
 echo "  Dataset:  data/${TRAIN_SIZE}_${N}o_train.pth"
 echo "  Model:    models/$TRAINED_MODEL_NAME/model.pth"
-echo "  Results:  results/*_MOCU.txt"
-echo "  Plots:    results/MOCU_${N}.png"
-echo "            results/timeComplexity_${N}.png"
+echo "  Results:  scripts/resultsOnLambda_100/*_MOCU.txt"
+echo "  Plots:    scripts/resultsOnLambda_100/MOCU_${N}.png"
+echo "            scripts/resultsOnLambda_100/timeComplexity_${N}.png"
 echo ""
 echo -e "${GREEN}All done!${NC}"
 

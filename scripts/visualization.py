@@ -1,12 +1,9 @@
 import sys
 import os
 import time
-from pathlib import Path
 import argparse
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
+sys.path.append("./src")
 
 import numpy as np
 import pandas as pd
@@ -16,17 +13,23 @@ import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser(description='Visualize MOCU-OED results')
 parser.add_argument('--N', type=int, default=5, help='Number of oscillators')
 parser.add_argument('--update_cnt', type=int, default=10, help='Number of updates')
-parser.add_argument('--result_folder', type=str, default='../results/', help='Results directory')
+parser.add_argument('--result_folder', type=str, default=None, help='Results directory (if None, uses lambda-based folder)')
+parser.add_argument('--lambda_value', type=int, default=100, help='Lambda parameter value (for folder organization)')
 args = parser.parse_args()
 
 update_cnt = args.update_cnt
 N = args.N
-resultFolder = args.result_folder
+# Use lambda-based folder if result_folder not specified
+if args.result_folder is None:
+    resultFolder = f'./resultsOnLambda_{args.lambda_value}/'
+else:
+    resultFolder = args.result_folder
+
+listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
 
 # Detect which methods have results by checking which files exist
-all_possible_methods = ['iMP', 'MP', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
 available_methods = []
-for method in all_possible_methods:
+for method in listMethods:
     mocu_file = resultFolder + method + '_MOCU.txt'
     if os.path.exists(mocu_file):
         available_methods.append(method)
@@ -60,94 +63,72 @@ for method in available_methods:
         'time': time_mean
     }
 
-# Define colors and markers for each method
-style_map = {
-    'iMP': ('r*:', 'MP (iterative)'),
-    'MP': ('rs--', 'MP'),
-    'iODE': ('yp:', 'ODE (iterative)'),
-    'ODE': ('yo--', 'ODE'),
-    'ENTROPY': ('gd:', 'Entropy'),
-    'RANDOM': ('b,:', 'Random')
-}
-
 # Plot MOCU curves
 x_ax = np.arange(0, update_cnt + 1, 1)
-plt.figure(figsize=(10, 6))
+plt.figure()
 
+# Build plot dynamically based on available methods
 plot_args = []
 legend_labels = []
-for method in available_methods:
-    if method in style_map:
-        style, label = style_map[method]
-        plot_args.extend([x_ax, method_data[method]['mocu'], style])
-        legend_labels.append(label)
+
+if 'iNN' in available_methods:
+    plot_args.extend([x_ax, method_data['iNN']['mocu'], 'r*:'])
+    legend_labels.append('Proposed (iterative)')
+if 'NN' in available_methods:
+    plot_args.extend([x_ax, method_data['NN']['mocu'], 'rs--'])
+    legend_labels.append('Proposed')
+if 'ODE' in available_methods:
+    plot_args.extend([x_ax, method_data['ODE']['mocu'], 'yo--'])
+    legend_labels.append('ODE')
+if 'ENTROPY' in available_methods:
+    plot_args.extend([x_ax, method_data['ENTROPY']['mocu'], 'gd:'])
+    legend_labels.append('Entropy')
+if 'RANDOM' in available_methods:
+    plot_args.extend([x_ax, method_data['RANDOM']['mocu'], 'b,:'])
+    legend_labels.append('Random')
 
 plt.plot(*plot_args)
 plt.legend(legend_labels)
 plt.xticks(np.arange(0, update_cnt + 1, 1)) 
 plt.xlabel('Number of updates')
 plt.ylabel('MOCU')
-plt.title(f'Experimental design for N={N} oscillators')
 plt.grid(True)
 plt.savefig(resultFolder + f"MOCU_{N}.png", dpi=300)
 plt.close()
 print(f"✓ Saved MOCU plot: {resultFolder}MOCU_{N}.png")
 
-# Create side-by-side subplots for time complexity
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+# Plot time complexity
+x_ax = np.arange(0, update_cnt + 1, 1)
+fig = plt.figure()
+ax = fig.add_subplot(1, 1, 1)
 
-# Identify slow methods (ODE-based) and fast methods
-slow_methods = [m for m in available_methods if 'ODE' in m]
-fast_methods = [m for m in available_methods if 'ODE' not in m]
+plot_args = []
+legend_labels = []
 
-# Left plot: All methods (log scale)
-plot_args_log = []
-legend_labels_log = []
-for method in available_methods:
-    if method in style_map:
-        style, label = style_map[method]
-        cumtime = np.insert(np.cumsum(method_data[method]['time']), 0, 0.0000000001)
-        plot_args_log.extend([x_ax, cumtime, style])
-        legend_labels_log.append(label)
+if 'iNN' in available_methods:
+    plot_args.extend([x_ax, np.insert(np.cumsum(method_data['iNN']['time']), 0, 0.0000000001), 'r*:'])
+    legend_labels.append('Proposed (iterative)')
+if 'NN' in available_methods:
+    plot_args.extend([x_ax, np.insert(np.cumsum(method_data['NN']['time']), 0, 0.0000000001), 'rs--'])
+    legend_labels.append('Proposed')
+if 'ODE' in available_methods:
+    plot_args.extend([x_ax, np.insert(np.cumsum(method_data['ODE']['time']), 0, 0.0000000001), 'yo--'])
+    legend_labels.append('ODE')
 
-if plot_args_log:
-    ax1.plot(*plot_args_log)
-    ax1.legend(legend_labels_log)
-    ax1.set_yscale('log')
-    ax1.set_xlabel('Number of updates')
-    ax1.set_ylabel('Cumulative time (seconds, log scale)')
-    ax1.set_xticks(np.arange(0, update_cnt + 1, 1))
-    ax1.set_title('All methods comparison (log scale)')
-    ax1.grid(True)
-
-# Right plot: Fast methods only (linear scale)
-if fast_methods:
-    plot_args_lin = []
-    legend_labels_lin = []
-    for method in fast_methods:
-        if method in style_map:
-            style, label = style_map[method]
-            cumtime = np.insert(np.cumsum(method_data[method]['time']), 0, 0.0)
-            plot_args_lin.extend([x_ax, cumtime, style])
-            legend_labels_lin.append(label)
-    
-    ax2.plot(*plot_args_lin)
-    ax2.legend(legend_labels_lin)
-    ax2.set_xlabel('Number of updates')
-    ax2.set_ylabel('Cumulative time (seconds, linear scale)')
-    ax2.set_xticks(np.arange(0, update_cnt + 1, 1))
-    ax2.set_title('Fast methods detail (linear scale)')
-    ax2.grid(True)
-else:
-    ax2.text(0.5, 0.5, 'No fast methods available', 
-             ha='center', va='center', transform=ax2.transAxes)
-
-plt.tight_layout()
+plt.plot(*plot_args)
+plt.legend(legend_labels)
+plt.yscale('log')
+plt.xlabel('Number of updates')
+plt.ylabel('Cumulative time complexity (in seconds)')
+plt.xticks(np.arange(0, update_cnt + 1, 1)) 
+plt.ylim(1, 10000)
+plt.grid(True)
 fig.savefig(resultFolder + f'timeComplexity_{N}.png', dpi=300)
 plt.close(fig)
 print(f"✓ Saved time complexity plot: {resultFolder}timeComplexity_{N}.png")
 
 print(f"\n✓ Visualization complete!")
 print(f"  Methods plotted: {', '.join(available_methods)}")
-print(f"  Output files: MOCU_{N}.png, timeComplexity_{N}.png")
+print(f"  Output folder: {resultFolder}")
+print(f"  Files: MOCU_{N}.png, timeComplexity_{N}.png")
 
