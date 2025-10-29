@@ -1,47 +1,187 @@
-# Folder view configuration files
-.DS_Store
-Desktop.ini
-
-# Thumbnail cache files
-._*
-Thumbs.db
-
-# Files that might appear on external disks
-.Spotlight-V100
-.Trashes
-
-# Compiled Python files
+# ============================================================================
+# Python
+# ============================================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 *.pyc
+*.pyo
+*.pyd
 
-# Compiled C++ files
+# C extensions
+*.so
 *.out
 
-# Application specific files
-venv
-node_modules
-.sass-cache
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Temp File
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+virtualenv/
+conda_env/
+
+# ============================================================================
+# IDEs and Editors
+# ============================================================================
+.vscode/
+.idea/
 *.swp
-*.swa
 *.swo
+*.swa
+*~
+.project
+.pydevproject
+.settings/
 
-# github merge file
-*.orig
+# ============================================================================
+# Operating System Files
+# ============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
 
-#vscode 
-.vscode
-.idea
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# Backup files from sed
-*.bak
+# Linux
+*~
 
-# Project-specific: Experiment outputs (large files)
-# All experiments folder - contains data, models, and results
-experiments/
+# ============================================================================
+# Project-Specific: Data & Models (Large Files)
+# ============================================================================
+# Trained models (PyTorch)
+*.pth
+*.pt
+*.h5
+*.pkl
+*.pickle
 
-# Legacy folders (if they exist)
+# Datasets
+*.npy
+*.npz
+*.hdf5
+*.mat
+
+# JSON data files (can be large)
+**/data/*.json
+
+# Experiment outputs folder (contains all runs)
+../experiments/
+
+# Legacy data/models/results folders (if they exist in repo)
 data/
 models/
 results/
 Experiment/
+
+# Allow example configs and small test files (optional)
+# !configs/**
+# !data/README.md
+
+# ============================================================================
+# Project-Specific: Results & Logs
+# ============================================================================
+# Result files
+*.txt
+!requirements.txt
+!README.txt
+
+# Plots and figures
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+
+# Logs
+*.log
+logs/
+
+# Tensorboard
+runs/
+tensorboard/
+
+# ============================================================================
+# Temporary & Backup Files
+# ============================================================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+*.swp
+*.swo
+
+# ============================================================================
+# Git & GitHub
+# ============================================================================
+*.orig
+.git-rewrite/
+
+# ============================================================================
+# Node & Web (if applicable)
+# ============================================================================
+node_modules/
+.sass-cache/
+
+# ============================================================================
+# Environment & Secrets
+# ============================================================================
+.env
+.env.local
+.env.*.local
+secrets.yaml
+*.key
+*.pem
