@@ -21,7 +21,8 @@ N = args.N
 resultFolder = args.result_folder
 
 # Keep iODE in list for index consistency, even though it's not used in experiments
-listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
+# DAD: Deep Adaptive Design (new method)
+listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM', 'DAD']
 
 # Detect which methods have results by checking which files exist
 available_methods = []
@@ -82,6 +83,9 @@ if 'ENTROPY' in available_methods:
 if 'RANDOM' in available_methods:
     plot_args.extend([x_ax, method_data['RANDOM']['mocu'], 'b,:'])
     legend_labels.append('Random')
+if 'DAD' in available_methods:
+    plot_args.extend([x_ax, method_data['DAD']['mocu'], 'm^-'])
+    legend_labels.append('DAD (Proposed)')
 
 plt.plot(*plot_args)
 plt.legend(legend_labels)
@@ -110,6 +114,9 @@ if 'NN' in available_methods:
 if 'ODE' in available_methods:
     plot_args.extend([x_ax, np.insert(np.cumsum(method_data['ODE']['time']), 0, 0.0000000001), 'yo--'])
     legend_labels.append('ODE')
+if 'DAD' in available_methods:
+    plot_args.extend([x_ax, np.insert(np.cumsum(method_data['DAD']['time']), 0, 0.0000000001), 'm^-'])
+    legend_labels.append('DAD (Proposed)')
 
 plt.plot(*plot_args)
 plt.legend(legend_labels)

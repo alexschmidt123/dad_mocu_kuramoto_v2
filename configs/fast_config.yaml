@@ -31,8 +31,9 @@ experiment:
   it_idx: 3                # Minimal iterations
   K_max: 1024              # Match dataset K_max
   methods:
-    - "iMP"                # Best method
-    - "RANDOM"             # Baseline (fastest)
+    - "iNN"                # Iterative MPNN (best method)
+    - "RANDOM"             # Random baseline (fastest)
+    - "DAD"                # Deep Adaptive Design
 
 # Paths (relative to project root)
 paths:

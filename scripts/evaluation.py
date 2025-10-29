@@ -1,62 +1,91 @@
-# Youngjoon Hong (07.15.2020)
-# !!!!!!!!!!!!!!!!!!!!Important!!!!!!!!!!!!!!!!!!!!!!!
-# If you want to chage the number of oscillators, Change "N" here.
-# In addition, please do not forget update "manually" the followings in the MOCU.py file
-# #define N_global 10. This is much faster than passing the params in pyCUDA.
+"""
+Unified Evaluation Script using New OED Methods Structure
+
+This script evaluates all OED methods using the new unified interface.
+All methods inherit from OEDMethod base class and share a common API.
+
+Usage:
+    python scripts/evaluation.py
+    python scripts/evaluation.py --methods "iNN,NN,RANDOM"
+"""
 
 import sys
 import time
-from pathlib import Path
 import os
+import argparse
+import numpy as np
+from pathlib import Path
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.strategies.entropy_strategy import *
-from src.strategies.random_strategy import *
-from src.strategies.mp_strategy import *
-from src.strategies.mocu_strategy import *
-from src.core.sync_detection import *
-import torch.multiprocessing as mp
+from src.methods import (
+    iNN_Method,
+    NN_Method,
+    ODE_Method,
+    iODE_Method,
+    ENTROPY_Method,
+    RANDOM_Method,
+    DAD_MOCU_Method,
+)
+from src.core.sync_detection import determineSyncN, determineSyncTwo
+from src.core.mocu_cuda import MOCU
 
-import numpy as np
 
 if __name__ == '__main__':
-    it_idx = 10
-    update_cnt = 10
-    N = 5
-    K_max = 20480
-    random_a = 1
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Evaluate OED methods')
+    parser.add_argument('--methods', type=str, default=None,
+                        help='Comma-separated list of methods to evaluate (e.g., "iNN,NN,RANDOM")')
+    args = parser.parse_args()
+    # ========== Configuration ==========
+    it_idx = 10  # Number of MOCU averaging iterations
+    update_cnt = 10  # Number of sequential experiments
+    N = 5  # Number of oscillators
+    K_max = 20480  # Monte Carlo samples for MOCU
     
-    # Get result folder name from environment variable (set by run.sh)
-    # Format: config_name_YYYYMMDD_HHMMSS
-    result_folder = os.getenv('RESULT_FOLDER', '../results/default/')
+    # Get result folder from environment variable
+    result_folder = os.getenv('RESULT_FOLDER', str(PROJECT_ROOT / 'results' / 'default'))
     os.makedirs(result_folder, exist_ok=True)
-
-    # Time must be larger than 250 for N = 5
+    
+    # Time parameters
     deltaT = 1.0 / 160.0
     TVirtual = 5
     MVirtual = int(TVirtual / deltaT)
     TReal = 5
     MReal = int(TReal / deltaT)
-
-    w = np.zeros(N)
-    w[0] = -2.5000
-    w[1] = -0.6667
-    w[2] = 1.1667
-    w[3] = 2.0000
-    w[4] = 5.8333
-
-    # All implemented strategies
-    # Note: iODE is too slow and not used in original experiments
-    listMethods = ['iNN', 'NN', 'ODE', 'ENTROPY', 'RANDOM']
+    
+    # Natural frequencies
+    w = np.array([-2.5000, -0.6667, 1.1667, 2.0000, 5.8333])
+    
+    # ========== Methods to evaluate ==========
+    # Can be set via command line or use defaults
+    if args.methods:
+        # Methods from command line (from config file via run.sh)
+        method_names = [m.strip() for m in args.methods.split(',')]
+        print(f"Using methods from command line: {method_names}")
+    else:
+        # Default methods if not specified
+        method_names = [
+            'iNN',      # Iterative MPNN (needs: train_mocu_predictor.py)
+            'NN',       # Static MPNN (needs: train_mocu_predictor.py)
+            'ODE',      # Static sampling-based (no training needed, but VERY slow)
+            # 'iODE',   # Iterative sampling-based (no training, EXTREMELY slow)
+            'ENTROPY',  # Greedy uncertainty (no training needed)
+            'RANDOM',   # Random baseline (no training needed)
+            # 'DAD',    # Deep Adaptive Design (needs: train_dad_policy.py) ⭐
+        ]
+        print(f"Using default methods: {method_names}")
+    
     numberOfSimulationsPerMethod = 10
     numberOfVaildSimulations = 0
     numberOfSimulations = 0
-
+    
+    # ========== Initial bounds ==========
     aInitialUpper = np.zeros((N, N))
     aInitialLower = np.zeros((N, N))
+    
     for i in range(N):
         for j in range(i + 1, N):
             syncThreshold = np.abs(w[i] - w[j]) / 2.0
@@ -64,67 +93,56 @@ if __name__ == '__main__':
             aInitialLower[i, j] = syncThreshold * 0.85
             aInitialUpper[j, i] = aInitialUpper[i, j]
             aInitialLower[j, i] = aInitialLower[i, j]
-
+    
+    # Apply specific reductions
     aInitialUpper[0, 2:5] = aInitialUpper[0, 2:5] * 0.3
     aInitialLower[0, 2:5] = aInitialLower[0, 2:5] * 0.3
     aInitialUpper[1, 3:5] = aInitialUpper[1, 3:5] * 0.45
     aInitialLower[1, 3:5] = aInitialLower[1, 3:5] * 0.45
-
-    np.savetxt(result_folder + 'paramNaturalFrequencies.txt', w, fmt='%.64e')
-    np.savetxt(result_folder + 'paramInitialUpper.txt', aInitialUpper, fmt='%.64e')
-    np.savetxt(result_folder + 'paramInitialLower.txt', aInitialLower, fmt='%.64e')
-
+    
+    # Ensure symmetry
     for i in range(N):
         for j in range(i + 1, N):
             aInitialUpper[j, i] = aInitialUpper[i, j]
             aInitialLower[j, i] = aInitialLower[i, j]
-    save_MOCU_matrix = np.zeros([update_cnt+1, len(listMethods), numberOfSimulationsPerMethod])
-    while (numberOfSimulationsPerMethod > numberOfVaildSimulations):
+    
+    # Save parameters
+    np.savetxt(os.path.join(result_folder, 'paramNaturalFrequencies.txt'), w, fmt='%.64e')
+    np.savetxt(os.path.join(result_folder, 'paramInitialUpper.txt'), aInitialUpper, fmt='%.64e')
+    np.savetxt(os.path.join(result_folder, 'paramInitialLower.txt'), aInitialLower, fmt='%.64e')
+    
+    # ========== Results storage ==========
+    save_MOCU_matrix = np.zeros([update_cnt + 1, len(method_names), numberOfSimulationsPerMethod])
+    
+    # ========== Main simulation loop ==========
+    while numberOfVaildSimulations < numberOfSimulationsPerMethod:
+        print(f"\n{'='*80}")
+        print(f"Starting simulation {numberOfSimulations + 1}")
+        print(f"{'='*80}")
+        
+        # Generate random coupling strengths
         randomState = np.random.RandomState(int(numberOfSimulations))
         a = np.zeros((N, N))
         for i in range(N):
-            for j in range(i+1,N):
+            for j in range(i + 1, N):
                 randomNumber = randomState.uniform()
-                a[i,j] = aInitialLower[i,j] + randomNumber*(aInitialUpper[i,j] - aInitialLower[i,j])
-                a[j,i] = a[i,j]
-
+                a[i, j] = aInitialLower[i, j] + randomNumber * (aInitialUpper[i, j] - aInitialLower[i, j])
+                a[j, i] = a[i, j]
+        
         numberOfSimulations += 1
-        #
-        # r1 = 3.0
-        # r2 = 3.0
-        # r3 = 3.0
-        #
-        # for i in range(N):
-        #     for j in range(i + 1, N):
-        #         if (i == 1):
-        #             a[i, j] = aInitialLower[i, j] + r1 / 6.0 * (aInitialUpper[i, j] - aInitialLower[i, j])
-        #             # a[j,i] = a[i,j]
-        #         elif (i == 2):
-        #             a[i, j] = aInitialLower[i, j] + r2 / 6.0 * (aInitialUpper[i, j] - aInitialLower[i, j])
-        #             # a[j,i] = a[i,j]
-        #         else:
-        #             a[i, j] = aInitialLower[i, j] + r3 / 6.0 * (aInitialUpper[i, j] - aInitialLower[i, j])
-        #             # a[j,i] = a[i,j]
-        #         a[j, i] = a[i, j]
-
+        
+        # Check if system is already synchronized (skip if so)
         init_sync_check = determineSyncN(w, deltaT, N, MReal, a)
-
         if init_sync_check == 1:
-            print('             The system has been already stable.')
+            print('             The system has been already stable. Skipping...')
             continue
         else:
-            print('             Unstable system has been found')
-
-        # print("initial a")
-        # print(a)
-        # print("aUpperBoundInitial")
-        # print(aInitialUpper)
-        # print("aLowerBoundInitial")
-        # print(aInitialLower)
-
+            print('             Unstable system has been found ✓')
+        
+        # Determine synchronization status and critical couplings for each pair
         isSynchronized = np.zeros((N, N))
         criticalK = np.zeros((N, N))
-
+        
         for i in range(N):
             for j in range(i + 1, N):
                 w_i = w[i]
@@ -133,82 +151,113 @@ if __name__ == '__main__':
                 syncThreshold = 0.5 * np.abs(w_i - w_j)
                 criticalK[i, j] = syncThreshold
                 criticalK[j, i] = syncThreshold
-                criticalK[j, i] = syncThreshold
                 isSynchronized[i, j] = determineSyncTwo(w_i, w_j, deltaT, 2, MReal, a_ij)
-
-        # print("criticalK")
-        # print(criticalK)
-        # print("isSynchronized")
-        # print(isSynchronized)
-
-        # if (len(isSynchronized[np.nonzero(isSynchronized)]) < N/2) or ((N*(N-1)/2) - len(isSynchronized[np.nonzero(isSynchronized)]) < N/2):
-        #     print('                     Not favorable system')
-        #     continue
-        # else:
-        #     print('                     Favorable system has been found')
-
-        np.savetxt(result_folder + 'paramCouplingStrength' + str(numberOfVaildSimulations) + '.txt', a, fmt='%.64e')
-        test = np.loadtxt(result_folder + 'paramCouplingStrength' + str(numberOfVaildSimulations) + '.txt')
-
-        for indexMethod in range(len(listMethods)):
+                isSynchronized[j, i] = isSynchronized[i, j]
+        
+        # Save coupling strengths for this simulation
+        coupling_file = os.path.join(result_folder, f'paramCouplingStrength{numberOfVaildSimulations}.txt')
+        np.savetxt(coupling_file, a, fmt='%.64e')
+        
+        # ========== Evaluate each method ==========
+        for method_idx, method_name in enumerate(method_names):
+            print(f"\n{'-'*80}")
+            print(f"Method: {method_name} (Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod})")
+            print(f"{'-'*80}")
+            
+            # Compute initial MOCU
             timeMOCU = time.time()
             it_temp_val = np.zeros(it_idx)
             for l in range(it_idx):
-                it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, aInitialLower.copy(), aInitialUpper.copy(), 0)
+                it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, 
+                                     aInitialLower.copy(), aInitialUpper.copy(), 0)
             MOCUInitial = np.mean(it_temp_val)
-            print("Round: ", numberOfVaildSimulations, "/", numberOfSimulationsPerMethod, "-", listMethods[indexMethod],
-                  "Iteration: ", numberOfVaildSimulations, " Initial MOCU: ", MOCUInitial, " Computation time: ",
-                  time.time() - timeMOCU)
-            aUpperUpdated = aInitialUpper.copy()
-            aLowerUpdated = aInitialLower.copy()
-
-            if listMethods[indexMethod] == 'RANDOM':
-                MOCUCurve, experimentSequence, timeComplexity = findRandomSequence(criticalK, isSynchronized,
-                    MOCUInitial, K_max, w, N, deltaT, MReal, TReal, aLowerUpdated, aUpperUpdated, it_idx, update_cnt)
-
-            elif listMethods[indexMethod] == 'ENTROPY':
-                MOCUCurve, experimentSequence, timeComplexity = findEntropySequence(criticalK, isSynchronized,
-                    MOCUInitial, K_max, w, N, deltaT, MReal, TReal, aLowerUpdated, aUpperUpdated, it_idx, update_cnt)
-
-            elif listMethods[indexMethod] == 'ODE':
-                iterative = False
-                print("iterative: ", iterative)
-                MOCUCurve, experimentSequence, timeComplexity = findMOCUSequence(criticalK, isSynchronized, MOCUInitial,
-                            K_max, w, N, deltaT, MVirtual, MReal, TVirtual, TReal, aLowerUpdated, aUpperUpdated, it_idx,
-                            update_cnt, iterative=iterative)
-
-            else:
-                if listMethods[indexMethod] == 'iNN':
-                    iterative = True
+            
+            print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {time.time() - timeMOCU:.2f}s)")
+            
+            # Initialize method
+            method_start_time = time.time()
+            
+            try:
+                if method_name == 'iNN':
+                    method = iNN_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
+                                       model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
+                
+                elif method_name == 'NN':
+                    method = NN_Method(N, K_max, deltaT, MReal, TReal, it_idx,
+                                      model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
+                
+                elif method_name == 'ODE':
+                    method = ODE_Method(N, K_max, deltaT, MReal, TReal, it_idx,
+                                       MVirtual=MVirtual, TVirtual=TVirtual)
+                
+                elif method_name == 'iODE':
+                    method = iODE_Method(N, K_max, deltaT, MReal, TReal, it_idx,
+                                        MVirtual=MVirtual, TVirtual=TVirtual)
+                
+                elif method_name == 'ENTROPY':
+                    method = ENTROPY_Method(N, K_max, deltaT, MReal, TReal, it_idx)
+                
+                elif method_name == 'RANDOM':
+                    method = RANDOM_Method(N, K_max, deltaT, MReal, TReal, it_idx,
+                                          seed=numberOfVaildSimulations)
+                
+                elif method_name == 'DAD':
+                    method = DAD_MOCU_Method(N, K_max, deltaT, MReal, TReal, it_idx)
+                
                 else:
-                    iterative = False
-                print("iterative: ", iterative)
-                # use a child process to avoid CUDA context conflict
-                smp = mp.get_context('spawn')
-                q = smp.SimpleQueue()
-                context = mp.spawn(getMPSequence, nprocs=1, join=False, args=(q, criticalK, isSynchronized,
-                                                    w, N, aLowerUpdated, aUpperUpdated, update_cnt, iterative))
-                context.join()
-                [optimalExperiments, update_bond, timeComplexity] = q.get()
-
-                MOCUCurve, experimentSequence, timeComplexity = findMPSequence(optimalExperiments, update_bond,
-                            timeComplexity, MOCUInitial, K_max, w, N, deltaT, MVirtual, MReal, TVirtual, TReal,
-                            aLowerUpdated, aUpperUpdated, it_idx, update_cnt)
-
-            outMOCUFile = open(result_folder + listMethods[indexMethod] + '_MOCU.txt', 'a')
-            outTimeFile = open(result_folder + listMethods[indexMethod] + '_timeComplexity.txt', 'a')
-            outSequenceFile = open(result_folder + listMethods[indexMethod] + '_sequence.txt', 'a')
-            np.savetxt(outMOCUFile, MOCUCurve.reshape(1, MOCUCurve.shape[0]), delimiter="\t")
-            np.savetxt(outTimeFile, timeComplexity.reshape(1, timeComplexity.shape[0]), delimiter="\t")
-            np.savetxt(outSequenceFile, experimentSequence, delimiter="\t")
-            outMOCUFile.close()
-            outTimeFile.close()
-            outSequenceFile.close()
-            save_MOCU_matrix[:, indexMethod, numberOfVaildSimulations] = MOCUCurve
+                    print(f"Unknown method: {method_name}")
+                    continue
+                
+                # Run the method
+                MOCUCurve, experimentSequence, timeComplexity = method.run_episode(
+                    w_init=w,
+                    a_lower_init=aInitialLower.copy(),
+                    a_upper_init=aInitialUpper.copy(),
+                    criticalK_init=criticalK,
+                    isSynchronized_init=isSynchronized,
+                    update_cnt=update_cnt
+                )
+                
+                total_time = time.time() - method_start_time
+                print(f"✓ Completed in {total_time:.2f}s")
+                print(f"  Final MOCU: {MOCUCurve[-1]:.6f}")
+                print(f"  Experiment sequence: {experimentSequence}")
+                
+                # Save results
+                outMOCUFile = open(os.path.join(result_folder, f'{method_name}_MOCU.txt'), 'a')
+                outTimeFile = open(os.path.join(result_folder, f'{method_name}_timeComplexity.txt'), 'a')
+                outSequenceFile = open(os.path.join(result_folder, f'{method_name}_sequence.txt'), 'a')
+                
+                np.savetxt(outMOCUFile, MOCUCurve.reshape(1, MOCUCurve.shape[0]), delimiter="\t")
+                np.savetxt(outTimeFile, timeComplexity.reshape(1, timeComplexity.shape[0]), delimiter="\t")
+                np.savetxt(outSequenceFile, experimentSequence, delimiter="\t")
+                
+                outMOCUFile.close()
+                outTimeFile.close()
+                outSequenceFile.close()
+                
+                save_MOCU_matrix[:, method_idx, numberOfVaildSimulations] = MOCUCurve
+            
+            except Exception as e:
+                print(f"✗ Error running {method_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
         numberOfVaildSimulations += 1
+    
+    # ========== Final summary ==========
+    print(f"\n{'='*80}")
+    print("All simulations completed!")
+    print(f"{'='*80}")
+    
     mean_MOCU_matrix = np.mean(save_MOCU_matrix, axis=2)
+    print("\nMean MOCU values across all simulations:")
     print(mean_MOCU_matrix)
-    outMOCUFile = open(result_folder + 'mean_MOCU.txt', 'a')
+    
+    outMOCUFile = open(os.path.join(result_folder, 'mean_MOCU.txt'), 'w')
     np.savetxt(outMOCUFile, mean_MOCU_matrix, delimiter="\t")
+    outMOCUFile.close()
     
     print(f"\n✓ Results saved to: {result_folder}")
+

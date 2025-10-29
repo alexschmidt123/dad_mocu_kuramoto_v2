@@ -28,11 +28,12 @@ experiment:
   it_idx: 10           # MOCU averaging iterations
   K_max: 20480
   methods:
-    - "iMP"
-    - "MP"
-    - "ODE"
-    - "ENTROPY"
-    - "RANDOM"
+    - "iNN"       # Iterative MPNN (best accuracy)
+    - "NN"        # Static MPNN (faster)
+    - "ODE"       # Sampling-based (exact but slow)
+    - "ENTROPY"   # Greedy uncertainty
+    - "RANDOM"    # Random baseline
+    - "DAD"       # Deep Adaptive Design
 
 # Paths (relative to project root)
 paths:

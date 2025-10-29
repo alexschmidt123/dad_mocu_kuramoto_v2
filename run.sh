@@ -70,6 +70,9 @@ EPOCHS=$(grep "epochs:" $CONFIG_FILE | awk '{print $2}')
 CONSTRAIN_WEIGHT=$(grep "constrain_weight:" $CONFIG_FILE | awk '{print $2}')
 SAVE_JSON=$(grep "save_json:" $CONFIG_FILE | awk '{print $2}')
 
+# Parse methods list from config (convert YAML list to comma-separated string)
+METHODS=$(grep -A 20 "^  methods:" $CONFIG_FILE | grep '    - "' | sed 's/.*"\(.*\)".*/\1/' | grep -v '^#' | tr '\n' ',' | sed 's/,$//')
+
 echo -e "${BLUE}Experiment Configuration:${NC}"
 echo "  System size (N): $N"
 echo "  N_global: $N_GLOBAL"
@@ -77,10 +80,11 @@ echo "  Trained model identifier: $TRAINED_MODEL_NAME"
 echo "  Samples per type: $SAMPLES"
 echo "  Training set size: $TRAIN_SIZE"
 echo "  Epochs: $EPOCHS"
+echo "  Methods to evaluate: $METHODS"
 echo ""
 
 # Step 0: Check and update N_global in CUDA code
-echo -e "${GREEN}[Step 0/4]${NC} Checking CUDA N_global configuration..."
+echo -e "${GREEN}[Step 0/5]${NC} Checking CUDA N_global configuration..."
 CUDA_FILE="src/core/mocu_cuda.py"
 CURRENT_N_GLOBAL=$(grep "#define N_global" $CUDA_FILE | awk '{print $3}')
 
@@ -105,19 +109,22 @@ fi
 
 # Step 1: Generate dataset
 echo ""
-echo -e "${GREEN}[Step 1/4]${NC} Checking dataset..."
+echo -e "${GREEN}[Step 1/5]${NC} Checking dataset..."
 
-TRAIN_FILE="${DATA_FOLDER}${TRAIN_SIZE}_${N}o_train.pth"
+# Check if any training file exists for this N (filename may differ from config due to filtering)
+EXISTING_TRAIN_FILE=$(ls ${DATA_FOLDER}*_${N}o_train.pth 2>/dev/null | head -1)
 
-if [ -f "$TRAIN_FILE" ]; then
-    echo -e "${GREEN}✓${NC} Dataset already exists: $TRAIN_FILE"
+if [ -n "$EXISTING_TRAIN_FILE" ]; then
+    echo -e "${GREEN}✓${NC} Dataset already exists: $EXISTING_TRAIN_FILE"
     echo "  Skipping data generation..."
+    TRAIN_FILE="$EXISTING_TRAIN_FILE"
 else
     echo "  Generating dataset (this may take time)..."
+    echo -e "${YELLOW}  Note: Actual file size may differ from config due to sync filtering${NC}"
     
     cd scripts
     
-    CMD="python data_generation.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $DATA_FOLDER"
+    CMD="python generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $DATA_FOLDER"
     if [ "$SAVE_JSON" = "true" ]; then
         CMD="$CMD --save_json"
     fi
@@ -125,21 +132,32 @@ else
     eval $CMD
     cd ..
     
-    if [ ! -f "$TRAIN_FILE" ]; then
-        echo -e "${RED}Error: Training file not found: $TRAIN_FILE${NC}"
+    # Find the actual generated file (may have different size than config)
+    TRAIN_FILE=$(ls ${DATA_FOLDER}*_${N}o_train.pth 2>/dev/null | head -1)
+    
+    if [ -z "$TRAIN_FILE" ]; then
+        echo -e "${RED}Error: No training file found in ${DATA_FOLDER}${NC}"
+        echo -e "${RED}Expected pattern: *_${N}o_train.pth${NC}"
         exit 1
     fi
     
+    # Extract actual size from filename
+    ACTUAL_SIZE=$(basename "$TRAIN_FILE" | sed "s/_${N}o_train.pth//" )
+    
     echo -e "${GREEN}✓${NC} Dataset generated: $TRAIN_FILE"
+    if [ "$ACTUAL_SIZE" != "$TRAIN_SIZE" ]; then
+        echo -e "${YELLOW}  Note: Generated ${ACTUAL_SIZE} samples (config requested ${TRAIN_SIZE})${NC}"
+        echo -e "${YELLOW}        This is normal - some samples filtered during sync detection${NC}"
+    fi
 fi
 
 # Step 2: Train model
 echo ""
-echo -e "${GREEN}[Step 2/4]${NC} Training model..."
+echo -e "${GREEN}[Step 2/5]${NC} Training MPNN predictor..."
 echo "  This may take 1-2 hours..."
 
 cd scripts
-python training.py \
+python train_mocu_predictor.py \
     --name "$EXPERIMENT_ID" \
     --data_path "$TRAIN_FILE" \
     --EPOCH $EPOCHS \
@@ -148,9 +166,66 @@ cd ..
 
 echo -e "${GREEN}✓${NC} Model trained: ${MODEL_FOLDER}model.pth"
 
+# Step 2.5: Check if DAD is in methods and train if needed
+echo ""
+if echo "$METHODS" | grep -q "DAD"; then
+    echo -e "${GREEN}[Step 2.5/5]${NC} Training DAD policy (DAD detected in methods)..."
+    
+    # Step 2.5a: Generate DAD trajectory data
+    echo "  [2.5a] Generating DAD trajectory data..."
+    echo "  This uses the trained MPNN to generate expert trajectories..."
+    
+    # Create DAD data folder
+    mkdir -p "${DATA_FOLDER}dad/"
+    
+    cd scripts
+    python generate_dad_data.py \
+        --N $N \
+        --num-episodes 100 \
+        --K 4 \
+        --K-max $K_MAX \
+        --output-dir "${DATA_FOLDER}dad/"
+    cd ..
+    
+    # Find the generated trajectory file
+    DAD_TRAJECTORY_FILE=$(ls ${DATA_FOLDER}dad/dad_trajectories_N${N}_K4_*.pth 2>/dev/null | head -1)
+    
+    if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
+        echo -e "${RED}Error: DAD trajectory file not found${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓${NC} DAD trajectories generated: $DAD_TRAJECTORY_FILE"
+    
+    # Step 2.5b: Train DAD policy
+    echo ""
+    echo "  [2.5b] Training DAD policy network..."
+    echo "  This may take 30-60 minutes..."
+    
+    cd scripts
+    python train_dad_policy.py \
+        --data-path "$DAD_TRAJECTORY_FILE" \
+        --name "dad_policy_N${N}" \
+        --epochs 100 \
+        --batch-size 64 \
+        --output-dir "$MODEL_FOLDER"
+    cd ..
+    
+    # Copy DAD policy to project models directory for evaluation
+    # (evaluation.py looks for models in PROJECT_ROOT/models/)
+    mkdir -p ../models
+    cp "${MODEL_FOLDER}dad_policy_N${N}.pth" ../models/
+    
+    echo -e "${GREEN}✓${NC} DAD policy trained and copied:"
+    echo "     Experiment: ${MODEL_FOLDER}dad_policy_N${N}.pth"
+    echo "     Project:    ../models/dad_policy_N${N}.pth"
+else
+    echo -e "${BLUE}[Step 2.5/5]${NC} Skipping DAD training (not in methods list)"
+fi
+
 # Step 3: Export configuration for evaluation scripts
 echo ""
-echo -e "${GREEN}[Step 3/4]${NC} Configuring experiment paths..."
+echo -e "${GREEN}[Step 3/5]${NC} Configuring experiment paths..."
 
 # Export experiment ID so Python scripts can load the correct model
 export MOCU_MODEL_NAME="$EXPERIMENT_ID"
@@ -162,21 +237,19 @@ echo -e "${GREEN}✓${NC} Result folder: $RESULT_FOLDER (via RESULT_FOLDER)"
 
 # Step 4: Run experiments
 echo ""
-echo -e "${GREEN}[Step 4/4]${NC} Running OED experiments..."
-echo "  Note: Edit scripts/evaluation.py if needed to set:"
-echo "    - N = $N (line 24)"
-echo "    - Methods to run (line 43)"
+echo -e "${GREEN}[Step 4/5]${NC} Running OED experiments..."
+echo "  Methods: $METHODS"
 echo ""
 
 cd scripts
-python evaluation.py
+python evaluation.py --methods "$METHODS"
 cd ..
 
 echo -e "${GREEN}✓${NC} Experiments complete: $RESULT_FOLDER"
 
 # Step 5: Visualize results
 echo ""
-echo -e "${GREEN}[Step 5/4]${NC} Generating visualizations..."
+echo -e "${GREEN}[Step 5/5]${NC} Generating visualizations..."
 
 cd scripts
 python visualization.py --N $N --update_cnt 10 --result_folder "$RESULT_FOLDER"
@@ -195,14 +268,37 @@ echo ""
 echo -e "${BLUE}Structure:${NC}"
 echo "  ${EXPERIMENT_ROOT}"
 echo "  ├── data/"
-echo "  │   └── ${TRAIN_SIZE}_${N}o_train.pth"
+echo "  │   ├── $(basename $TRAIN_FILE)  (MPNN training data)"
+
+if echo "$METHODS" | grep -q "DAD"; then
+    echo "  │   └── dad/                        (DAD trajectory data)"
+    echo "  │       └── dad_trajectories_N${N}_K4_*.pth"
+else
+    echo "  │   └── ..."
+fi
+
 echo "  ├── models/"
-echo "  │   ├── model.pth"
-echo "  │   └── statistics.pth"
+echo "  │   ├── model.pth                   (Trained MPNN predictor)"
+echo "  │   ├── statistics.pth              (MPNN normalization stats)"
+
+if echo "$METHODS" | grep -q "DAD"; then
+    echo "  │   └── dad_policy_N${N}.pth        (Trained DAD policy) ⭐"
+else
+    echo "  │   └── ..."
+fi
+
 echo "  └── results/"
-echo "      ├── *_MOCU.txt"
-echo "      ├── MOCU_${N}.png"
-echo "      └── timeComplexity_${N}.png"
+echo "      ├── *_MOCU.txt                  (MOCU curves for all methods)"
+echo "      ├── *_timeComplexity.txt        (Time complexity per method)"
+echo "      ├── *_sequence.txt              (Experiment sequences)"
+echo "      ├── MOCU_${N}.png               (MOCU comparison plot)"
+echo "      └── timeComplexity_${N}.png     (Time complexity plot)"
 echo ""
+
+if echo "$METHODS" | grep -q "DAD"; then
+    echo -e "${BLUE}Note:${NC} DAD policy also copied to: ../models/dad_policy_N${N}.pth"
+    echo ""
+fi
+
 echo -e "${GREEN}All done!${NC}"
 
