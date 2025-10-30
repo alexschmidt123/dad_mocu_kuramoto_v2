@@ -166,10 +166,14 @@ echo ""
 echo -e "${GREEN}[Step 2/5]${NC} Training MPNN predictor..."
 echo "  This may take 1-2 hours..."
 
+# Convert paths to absolute for training script
+ABS_TRAIN_FILE=$(cd "$(dirname "$TRAIN_FILE")" && pwd)/$(basename "$TRAIN_FILE")
+ABS_MODEL_FOLDER=$(cd "$MODEL_FOLDER" && pwd)
+
 cd scripts
 python train_mocu_predictor.py \
     --name "$EXPERIMENT_ID" \
-    --data_path "$TRAIN_FILE" \
+    --data_path "$ABS_TRAIN_FILE" \
     --EPOCH $EPOCHS \
     --Constrain_weight $CONSTRAIN_WEIGHT
 cd ..
@@ -188,17 +192,20 @@ if echo "$METHODS" | grep -q "DAD"; then
     # Create DAD data folder
     mkdir -p "${DATA_FOLDER}dad/"
     
+    # Convert to absolute path for DAD data generation
+    ABS_DAD_DATA_FOLDER=$(cd "${DATA_FOLDER}dad/" && pwd)
+    
     cd scripts
     python generate_dad_data.py \
         --N $N \
         --num-episodes 100 \
         --K 4 \
         --K-max $K_MAX \
-        --output-dir "${DATA_FOLDER}dad/"
+        --output-dir "$ABS_DAD_DATA_FOLDER"
     cd ..
     
     # Find the generated trajectory file
-    DAD_TRAJECTORY_FILE=$(ls ${DATA_FOLDER}dad/dad_trajectories_N${N}_K4_*.pth 2>/dev/null | head -1)
+    DAD_TRAJECTORY_FILE=$(find "${DATA_FOLDER}dad/" -name "dad_trajectories_N${N}_K4_*.pth" -type f 2>/dev/null | head -1)
     
     if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
         echo -e "${RED}Error: DAD trajectory file not found${NC}"
@@ -212,13 +219,16 @@ if echo "$METHODS" | grep -q "DAD"; then
     echo "  [2.5b] Training DAD policy network..."
     echo "  This may take 30-60 minutes..."
     
+    # Convert paths to absolute for DAD training
+    ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$DAD_TRAJECTORY_FILE")
+    
     cd scripts
     python train_dad_policy.py \
-        --data-path "$DAD_TRAJECTORY_FILE" \
+        --data-path "$ABS_DAD_TRAJ_FILE" \
         --name "dad_policy_N${N}" \
         --epochs 100 \
         --batch-size 64 \
-        --output-dir "$MODEL_FOLDER"
+        --output-dir "$ABS_MODEL_FOLDER"
     cd ..
     
     # Copy DAD policy to project models directory for evaluation
@@ -261,8 +271,11 @@ echo -e "${GREEN}✓${NC} Experiments complete: $RESULT_FOLDER"
 echo ""
 echo -e "${GREEN}[Step 5/5]${NC} Generating visualizations..."
 
+# Convert result folder to absolute path
+ABS_RESULT_FOLDER=$(cd "$RESULT_FOLDER" && pwd)
+
 cd scripts
-python visualization.py --N $N --update_cnt 10 --result_folder "$RESULT_FOLDER"
+python visualization.py --N $N --update_cnt 10 --result_folder "$ABS_RESULT_FOLDER"
 cd ..
 
 echo -e "${GREEN}✓${NC} Plots generated: ${RESULT_FOLDER}MOCU_${N}.png, ${RESULT_FOLDER}timeComplexity_${N}.png"
