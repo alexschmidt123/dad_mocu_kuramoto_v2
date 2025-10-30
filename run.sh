@@ -112,7 +112,7 @@ echo ""
 echo -e "${GREEN}[Step 1/5]${NC} Checking dataset..."
 
 # Check if any training file exists for this N (filename may differ from config due to filtering)
-EXISTING_TRAIN_FILE=$(ls ${DATA_FOLDER}*_${N}o_train.pth 2>/dev/null | head -1)
+EXISTING_TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
 
 if [ -n "$EXISTING_TRAIN_FILE" ]; then
     echo -e "${GREEN}✓${NC} Dataset already exists: $EXISTING_TRAIN_FILE"
@@ -122,22 +122,32 @@ else
     echo "  Generating dataset (this may take time)..."
     echo -e "${YELLOW}  Note: Actual file size may differ from config due to sync filtering${NC}"
     
+    # Save current directory
+    ORIGINAL_DIR=$(pwd)
+    
     cd scripts
     
-    CMD="python generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $DATA_FOLDER"
+    # Use absolute path for output
+    ABS_DATA_FOLDER=$(cd "${ORIGINAL_DIR}/${DATA_FOLDER}" && pwd)
+    
+    CMD="python generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $ABS_DATA_FOLDER"
     if [ "$SAVE_JSON" = "true" ]; then
         CMD="$CMD --save_json"
     fi
     
     eval $CMD
-    cd ..
+    
+    # Return to original directory
+    cd "$ORIGINAL_DIR"
     
     # Find the actual generated file (may have different size than config)
-    TRAIN_FILE=$(ls ${DATA_FOLDER}*_${N}o_train.pth 2>/dev/null | head -1)
+    TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
     
     if [ -z "$TRAIN_FILE" ]; then
         echo -e "${RED}Error: No training file found in ${DATA_FOLDER}${NC}"
         echo -e "${RED}Expected pattern: *_${N}o_train.pth${NC}"
+        echo -e "${YELLOW}Debug: Listing DATA_FOLDER contents:${NC}"
+        ls -la "${DATA_FOLDER}" 2>&1 || echo "  Directory not accessible"
         exit 1
     fi
     
