@@ -4,6 +4,10 @@
 
 set -e  # Exit on error
 
+# Set Python path to project root for imports
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
