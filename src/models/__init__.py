@@ -2,35 +2,18 @@
 Models Package
 
 Directory structure:
-- predictors/: All MOCU prediction models
-  - all_predictors.py: Unified implementations (recommended)
-  - legacy_baselines.py: Original CNN/MLP (backward compatibility)
-  - legacy_mpnn_train.py: Original MPNN training (backward compatibility)
-  
+- predictors/: All MOCU prediction models (import as `src.models.predictors`)
 - policy_networks.py: DAD policy network
 
-For new projects, import from predictors package.
+Note: Avoid eager imports of heavy predictor modules at package import time
+to prevent unnecessary dependencies when only policy networks are needed.
 """
 
-# MOCU Predictors (recommended)
-from .predictors import (
-    MLPPredictor,
-    CNNPredictor,
-    MPNNPlusPredictor,
-    SamplingBasedMOCU,
-    EnsemblePredictor,
-)
-
-# Policy Networks
+# Export policy networks directly
 from .policy_networks import DADPolicyNetwork
 
+# Expose subpackages without importing them eagerly
 __all__ = [
-    # MOCU Predictors
-    'MLPPredictor',
-    'CNNPredictor',
-    'MPNNPlusPredictor',
-    'SamplingBasedMOCU',
-    'EnsemblePredictor',
-    # Policy Networks
     'DADPolicyNetwork',
+    'predictors',  # subpackage
 ]
