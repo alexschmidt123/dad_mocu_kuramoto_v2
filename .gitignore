@@ -122,6 +122,7 @@ $RECYCLE.BIN/
 # Legacy data/models/results folders (if they exist in repo)
 data/
 models/
+!src/models/
 results/
 Experiment/
 
