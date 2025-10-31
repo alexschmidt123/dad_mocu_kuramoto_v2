@@ -5,15 +5,16 @@ Directory structure:
 - predictors/: All MOCU prediction models (import as `src.models.predictors`)
 - policy_networks.py: DAD policy network
 
-Note: Avoid eager imports of heavy predictor modules at package import time
-to prevent unnecessary dependencies when only policy networks are needed.
+Note: Import directly from submodules:
+    from src.models.policy_networks import DADPolicyNetwork, create_state_data
+    from src.models.predictors import MPNNPlusPredictor
 """
 
-# Export policy networks directly
-from .policy_networks import DADPolicyNetwork
+# Don't import anything eagerly - let users import directly from submodules
+# This avoids import errors when dependencies are missing and allows
+# direct imports like: from src.models.policy_networks import DADPolicyNetwork
 
-# Expose subpackages without importing them eagerly
 __all__ = [
-    'DADPolicyNetwork',
+    # Subpackages/modules are accessible via direct import
     'predictors',  # subpackage
 ]
