@@ -34,8 +34,8 @@ fi
 # Extract config name from path (e.g., "N5_config" from "configs/N5_config.yaml")
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 
-# Generate timestamp for this run (format: DDMMYYYY_HHMMSS)
-TIMESTAMP=$(date +"%d%m%Y_%H%M%S")
+# Generate timestamp for this run (format: MMDDYYYY_HHMMSS in 24h format)
+TIMESTAMP=$(date +"%m%d%Y_%H%M%S")
 
 # New folder structure:
 # - data/{config_name}/          (reusable, no timestamp)
