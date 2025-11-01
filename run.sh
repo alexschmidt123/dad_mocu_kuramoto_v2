@@ -162,17 +162,22 @@ ABS_TRAIN_FILE=$(cd "$(dirname "$TRAIN_FILE")" && pwd)/$(basename "$TRAIN_FILE")
 ABS_MODEL_RUN_FOLDER=$(cd "$MODEL_RUN_FOLDER" && pwd)
 
 cd scripts
+# Save model directly to the timestamped folder
+# Pass the full path to the timestamp folder as output_dir, and use empty name
+# This way train_mocu_predictor.py saves directly to models/fast_config/11012025_163858/
 python train_mocu_predictor.py \
-    --name "${CONFIG_NAME}_${TIMESTAMP}" \
+    --name "" \
     --data_path "$ABS_TRAIN_FILE" \
     --EPOCH $EPOCHS \
     --Constrain_weight $CONSTRAIN_WEIGHT \
-    --output_dir "$(dirname "$ABS_MODEL_RUN_FOLDER")/"
+    --output_dir "$ABS_MODEL_RUN_FOLDER"
 cd "$PROJECT_ROOT"
 
 echo -e "${GREEN}✓${NC} Model trained: ${MODEL_RUN_FOLDER}model.pth"
 
 # Export experiment ID (for DAD training and evaluation)
+# Model name format: {config_name}_{timestamp} for backward compatibility
+# But model is saved as: models/{config_name}/{timestamp}/model.pth
 export MOCU_MODEL_NAME="${CONFIG_NAME}_${TIMESTAMP}"
 
 # Step 2.5: Check if DAD is in methods and train if needed

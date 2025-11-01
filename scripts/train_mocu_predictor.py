@@ -127,11 +127,25 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     output_dir_str = str(output_dir) + '/' if not str(output_dir).endswith('/') else str(output_dir)
     
-    # Model folder is created by run.sh, but ensure it exists
-    model_dir = output_dir_str + args.name
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-    train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, args.name, output_dir_str)
+    # Model folder: if name is provided, append it; otherwise use output_dir directly
+    # This allows run.sh to pass the exact timestamp folder path
+    if args.name:
+        model_dir = output_dir_str + args.name
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        model_path_prefix = output_dir_str + args.name
+        load_data_output_dir = output_dir_str
+        load_data_name = args.name
+    else:
+        # No name provided - use output_dir directly (run.sh passes exact timestamp folder)
+        model_dir = output_dir_str.rstrip('/')
+        model_path_prefix = output_dir_str.rstrip('/')
+        # Extract folder name from path for loadData
+        model_path_prefix_path = Path(model_path_prefix)
+        load_data_output_dir = str(model_path_prefix_path.parent) + '/'
+        load_data_name = model_path_prefix_path.name
+    
+    train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, load_data_name, load_data_output_dir)
     print('Making Model...')
     with torch.backends.cudnn.flags(enabled=False):
         model = Net().cuda()  # Create model FIRST
@@ -204,15 +218,15 @@ def main():
             if (epoch + 1) % 10 == 0 or epoch == EPOCH - 1:
                 print('         | Test MSE: %.6f' % loss)
             if epoch > 5 and loss < min(test_MSE[0:epoch]):
-                torch.save(model.state_dict(), output_dir_str + args.name + '/model.pth')
+                torch.save(model.state_dict(), model_path_prefix + '/model.pth')
                 if (epoch + 1) % 10 != 0:
                     print('         | Test MSE: %.6f (best, saved)' % loss)
 
     # plot and save
-    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, args.name, output_dir_str)
+    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, args.name if args.name else "model", model_path_prefix + '/')
 
     # save some prediction result
-    savePrediction(data, prediction, std, mean, args.name, output_dir_str)
+    savePrediction(data, prediction, std, mean, args.name if args.name else "model", model_path_prefix + '/')
 
     if args.debug:
         printInstance(data, prediction, std, mean)

@@ -62,19 +62,27 @@ class NN_Method(OEDMethod):
         model_path = None
         stats_path = None
         
-        # Check if model_name contains timestamp (format: config_timestamp)
-        if '_' in self.model_name and len(self.model_name.split('_')) >= 2:
+        # Check if model_name contains timestamp (format: config_MMDDYYYY_HHMMSS)
+        # Timestamp format: MMDDYYYY_HHMMSS (e.g., 11012025_163858)
+        if '_' in self.model_name:
             parts = self.model_name.split('_')
-            timestamp = parts[-1]
-            config_name = '_'.join(parts[:-1])
-            # Try timestamped path first
-            candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
-            candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
-            if candidate_model.exists() and candidate_stats.exists():
-                model_path = candidate_model
-                stats_path = candidate_stats
+            # Check if last part is 6 digits (HHMMSS) and second-to-last is 8 digits (MMDDYYYY)
+            if len(parts) >= 3 and len(parts[-1]) == 6 and parts[-1].isdigit() and len(parts[-2]) == 8 and parts[-2].isdigit():
+                # Last two parts form timestamp: MMDDYYYY_HHMMSS
+                timestamp = f"{parts[-2]}_{parts[-1]}"
+                config_name = '_'.join(parts[:-2])
+                # Try timestamped path first
+                candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
+                candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
+                if candidate_model.exists() and candidate_stats.exists():
+                    model_path = candidate_model
+                    stats_path = candidate_stats
+                else:
+                    # Fall back to flat structure
+                    model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
+                    stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
             else:
-                # Fall back to flat structure
+                # Doesn't match timestamp pattern, try flat structure
                 model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
                 stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
         else:

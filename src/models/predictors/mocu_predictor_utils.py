@@ -40,21 +40,30 @@ def load_mpnn_predictor(model_name, device='cuda'):
     model_path = None
     stats_path = None
     
-    # Check if model_name contains timestamp (format: config_timestamp)
-    # If so, it's in models/{config_name}/{timestamp}/
-    if '_' in model_name and len(model_name.split('_')) >= 2:
+    # New structure: models/{config_name}/{timestamp}/model.pth
+    # Model name format from run.sh: {config_name}_{MMDDYYYY_HHMMSS}
+    # Timestamp format: MMDDYYYY_HHMMSS (e.g., 11012025_163858)
+    # So splitting by '_' gives: ['config', 'name', 'MMDDYYYY', 'HHMMSS']
+    # We need to recognize that last 2 parts form the timestamp
+    if '_' in model_name:
         parts = model_name.split('_')
-        # Last part is timestamp, rest is config name
-        timestamp = parts[-1]
-        config_name = '_'.join(parts[:-1])
-        # Try timestamped path first
-        candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
-        candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
-        if candidate_model.exists() and candidate_stats.exists():
-            model_path = candidate_model
-            stats_path = candidate_stats
+        # Check if last part is 6 digits (HHMMSS format) and second-to-last is 8 digits (MMDDYYYY format)
+        if len(parts) >= 3 and len(parts[-1]) == 6 and parts[-1].isdigit() and len(parts[-2]) == 8 and parts[-2].isdigit():
+            # Last two parts form timestamp: MMDDYYYY_HHMMSS
+            timestamp = f"{parts[-2]}_{parts[-1]}"
+            config_name = '_'.join(parts[:-2])
+            # Try timestamped path: models/{config_name}/{timestamp}/model.pth
+            candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
+            candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
+            if candidate_model.exists() and candidate_stats.exists():
+                model_path = candidate_model
+                stats_path = candidate_stats
+            else:
+                # Fall back to flat structure
+                model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
+                stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
         else:
-            # Fall back to flat structure
+            # Doesn't match timestamp pattern, try flat structure
             model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
             stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
     else:

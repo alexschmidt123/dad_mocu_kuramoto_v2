@@ -126,12 +126,19 @@ class DADPolicyNetwork(nn.Module):
             torch.backends.cudnn.enabled = cudnn_enabled
         
         # Graph-level pooling
-        if batch is not None:
-            out = self.set2set(out, batch)  # [batch_size, 2 * encoding_dim]
-        else:
-            # Single graph
-            out = self.set2set(out, torch.zeros(out.size(0), dtype=torch.long, device=out.device))
-            out = out.unsqueeze(0)  # [1, 2 * encoding_dim]
+        # Set2Set uses LSTM internally - disable cuDNN to avoid stream mismatch
+        cudnn_enabled = torch.backends.cudnn.enabled
+        try:
+            torch.backends.cudnn.enabled = False
+            if batch is not None:
+                out = self.set2set(out, batch)  # [batch_size, 2 * encoding_dim]
+            else:
+                # Single graph - ensure batch tensor is on correct device
+                batch_tensor = torch.zeros(out.size(0), dtype=torch.long, device=device)
+                out = self.set2set(out, batch_tensor)
+                out = out.unsqueeze(0)  # [1, 2 * encoding_dim]
+        finally:
+            torch.backends.cudnn.enabled = cudnn_enabled
         
         state_embedding = self.graph_mlp(out)  # [batch_size, hidden_dim]
         
