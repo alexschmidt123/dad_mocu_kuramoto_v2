@@ -281,7 +281,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 action_idx = model.pair_to_idx(i_obs, j_obs)
                 available_mask[action_idx] = 0.0
             
-            available_mask_tensor = torch.tensor([available_mask], dtype=torch.float32, device=device)
+            # Convert numpy array to tensor properly (fixes warning and ensures correct device)
+            available_mask_array = np.array([available_mask], dtype=np.float32)
+            available_mask_tensor = torch.from_numpy(available_mask_array).to(device)
             
             # Sample action from current policy (NOT expert action!)
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)

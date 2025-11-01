@@ -93,6 +93,13 @@ class DADPolicyNetwork(nn.Module):
         Returns:
             state_embedding: [batch_size, hidden_dim]
         """
+        # Ensure we're on the correct device (model's device)
+        device = next(self.parameters()).device
+        
+        # Ensure all state_data components are on correct device
+        # This is critical for cuDNN operations which require all tensors on same device/stream
+        state_data = state_data.to(device)
+        
         # Node features
         x = state_data.x  # [batch_size * N, 1]
         edge_index = state_data.edge_index
@@ -101,12 +108,17 @@ class DADPolicyNetwork(nn.Module):
         
         # Initial embedding
         out = F.relu(self.lin0(x))  # [batch_size * N, encoding_dim]
-        h = out.unsqueeze(0)  # [1, batch_size * N, encoding_dim]
+        # Initialize hidden state - ensure it's contiguous for cuDNN
+        h = out.unsqueeze(0).contiguous()  # [1, batch_size * N, encoding_dim]
         
         # Message passing
         for _ in range(3):
             m = F.relu(self.conv(out, edge_index, edge_attr))
-            out, h = self.gru(m.unsqueeze(0), h)
+            # Ensure inputs are contiguous and on same device before GRU (critical for cuDNN)
+            m_seq = m.unsqueeze(0).contiguous()
+            # Ensure h is also contiguous (required by cuDNN)
+            h = h.contiguous()
+            out, h = self.gru(m_seq, h)
             out = out.squeeze(0)
         
         # Graph-level pooling
