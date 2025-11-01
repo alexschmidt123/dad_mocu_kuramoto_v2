@@ -111,47 +111,103 @@ else
     echo -e "${GREEN}✓${NC} N_global is correctly set to $N_GLOBAL"
 fi
 
-# Step 1: Generate dataset (reusable - check if exists)
+# Function to check if data exists and matches config requirements
+check_and_generate_data() {
+    local data_type=$1  # "mocu" or "dad"
+    local need_generate=false
+    
+    if [ "$data_type" = "mocu" ]; then
+        # Check for MPNN training data
+        EXISTING_TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
+        
+        if [ -n "$EXISTING_TRAIN_FILE" ]; then
+            # File exists - check if it has reasonable size (at least some samples)
+            EXISTING_SIZE=$(basename "$EXISTING_TRAIN_FILE" | sed "s/_${N}o_train.pth//")
+            
+            # If existing file has very few samples (less than 50% of requested), regenerate
+            if [ "$EXISTING_SIZE" -lt $((TRAIN_SIZE / 2)) ] 2>/dev/null; then
+                echo -e "${YELLOW}  Existing data has only ${EXISTING_SIZE} samples (requested ${TRAIN_SIZE})${NC}"
+                echo -e "${YELLOW}  Will regenerate to get more samples${NC}"
+                need_generate=true
+            else
+                echo -e "${GREEN}✓${NC} MPNN dataset found: $EXISTING_TRAIN_FILE"
+                echo "  Reusing existing data (${EXISTING_SIZE} samples)"
+                TRAIN_FILE="$EXISTING_TRAIN_FILE"
+                need_generate=false
+            fi
+        else
+            need_generate=true
+        fi
+        
+        if [ "$need_generate" = true ]; then
+            echo "  Generating MPNN dataset (this may take time)..."
+            echo -e "${YELLOW}  Note: Actual file size may differ from config due to sync filtering${NC}"
+            
+            cd scripts
+            ABS_DATA_FOLDER=$(cd "${DATA_FOLDER}" && pwd)
+            
+            CMD="python generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $ABS_DATA_FOLDER"
+            if [ "$SAVE_JSON" = "true" ]; then
+                CMD="$CMD --save_json"
+            fi
+            
+            eval $CMD
+            cd "$PROJECT_ROOT"
+            
+            TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
+            
+            if [ -z "$TRAIN_FILE" ]; then
+                echo -e "${RED}Error: No training file found in ${DATA_FOLDER}${NC}"
+                exit 1
+            fi
+            
+            ACTUAL_SIZE=$(basename "$TRAIN_FILE" | sed "s/_${N}o_train.pth//")
+            echo -e "${GREEN}✓${NC} MPNN dataset generated: $TRAIN_FILE"
+            if [ "$ACTUAL_SIZE" != "$TRAIN_SIZE" ]; then
+                echo -e "${YELLOW}  Note: Generated ${ACTUAL_SIZE} samples (config requested ${TRAIN_SIZE})${NC}"
+            fi
+        fi
+        
+    elif [ "$data_type" = "dad" ]; then
+        # Check for DAD trajectory data
+        DAD_DATA_DIR="${DATA_FOLDER}dad/"
+        EXISTING_DAD_FILE=$(find "$DAD_DATA_DIR" -name "dad_trajectories_N${N}_K4_random.pth" -type f 2>/dev/null | head -1)
+        
+        if [ -n "$EXISTING_DAD_FILE" ]; then
+            echo -e "${GREEN}✓${NC} DAD trajectories found: $EXISTING_DAD_FILE"
+            echo "  Reusing existing data"
+            DAD_TRAJECTORY_FILE="$EXISTING_DAD_FILE"
+            need_generate=false
+        else
+            echo "  Generating DAD trajectory data..."
+            mkdir -p "$DAD_DATA_DIR"
+            ABS_DAD_DATA_FOLDER=$(cd "$DAD_DATA_DIR" && pwd)
+            
+            cd scripts
+            python generate_dad_data.py \
+                --N $N \
+                --num-episodes 100 \
+                --K 4 \
+                --output-dir "$ABS_DAD_DATA_FOLDER"
+            cd "$PROJECT_ROOT"
+            
+            DAD_TRAJECTORY_FILE=$(find "$DAD_DATA_DIR" -name "dad_trajectories_N${N}_K4_random.pth" -type f 2>/dev/null | head -1)
+            
+            if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
+                echo -e "${RED}Error: DAD trajectory file not found${NC}"
+                exit 1
+            fi
+            
+            echo -e "${GREEN}✓${NC} DAD trajectories generated: $DAD_TRAJECTORY_FILE"
+            need_generate=true
+        fi
+    fi
+}
+
+# Step 1: Check and generate MPNN dataset
 echo ""
-echo -e "${GREEN}[Step 1/5]${NC} Checking dataset..."
-
-EXISTING_TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
-
-if [ -n "$EXISTING_TRAIN_FILE" ]; then
-    echo -e "${GREEN}✓${NC} Dataset already exists: $EXISTING_TRAIN_FILE"
-    echo "  Reusing existing data (same config = reusable data)"
-    TRAIN_FILE="$EXISTING_TRAIN_FILE"
-else
-    echo "  Generating dataset (this may take time)..."
-    echo -e "${YELLOW}  Note: Actual file size may differ from config due to sync filtering${NC}"
-    
-    cd scripts
-    
-    ABS_DATA_FOLDER=$(cd "${DATA_FOLDER}" && pwd)
-    
-    CMD="python generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $ABS_DATA_FOLDER"
-    if [ "$SAVE_JSON" = "true" ]; then
-        CMD="$CMD --save_json"
-    fi
-    
-    eval $CMD
-    
-    cd "$PROJECT_ROOT"
-    
-    TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
-    
-    if [ -z "$TRAIN_FILE" ]; then
-        echo -e "${RED}Error: No training file found in ${DATA_FOLDER}${NC}"
-        exit 1
-    fi
-    
-    ACTUAL_SIZE=$(basename "$TRAIN_FILE" | sed "s/_${N}o_train.pth//" )
-    
-    echo -e "${GREEN}✓${NC} Dataset generated: $TRAIN_FILE"
-    if [ "$ACTUAL_SIZE" != "$TRAIN_SIZE" ]; then
-        echo -e "${YELLOW}  Note: Generated ${ACTUAL_SIZE} samples (config requested ${TRAIN_SIZE})${NC}"
-    fi
-fi
+echo -e "${GREEN}[Step 1/5]${NC} Checking MPNN dataset..."
+check_and_generate_data "mocu"
 
 # Step 2: Train model (save to timestamped folder)
 echo ""
@@ -186,31 +242,12 @@ echo ""
 if echo "$METHODS" | grep -q "DAD"; then
     echo -e "${GREEN}[Step 2.5/5]${NC} Training DAD policy (DAD detected in methods)..."
     
-    # Step 2.5a: Generate DAD trajectory data (AFTER MPNN is trained)
-    echo "  [2.5a] Generating DAD trajectory data..."
+    # Step 2.5a: Check and generate DAD trajectory data (AFTER MPNN is trained)
+    echo "  [2.5a] Checking DAD trajectory data..."
     echo "  Note: DAD data generation uses random actions (REINFORCE doesn't need expert labels)"
     echo "        MOCU is computed during training using the trained MPNN predictor"
     
-    mkdir -p "${DATA_FOLDER}dad/"
-    ABS_DAD_DATA_FOLDER=$(cd "${DATA_FOLDER}dad/" && pwd)
-    
-    # Generate DAD training data (random expert - MOCU computed during training)
-    cd scripts
-    python generate_dad_data.py \
-        --N $N \
-        --num-episodes 100 \
-        --K 4 \
-        --output-dir "$ABS_DAD_DATA_FOLDER"
-    cd "$PROJECT_ROOT"
-    
-    DAD_TRAJECTORY_FILE=$(find "${DATA_FOLDER}dad/" -name "dad_trajectories_N${N}_K4_random.pth" -type f 2>/dev/null | head -1)
-    
-    if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
-        echo -e "${RED}Error: DAD trajectory file not found${NC}"
-        exit 1
-    fi
-    
-    echo -e "${GREEN}✓${NC} DAD trajectories generated: $DAD_TRAJECTORY_FILE"
+    check_and_generate_data "dad"
     
     # Step 2.5b: Train DAD policy
     echo ""
