@@ -67,15 +67,30 @@ class NN_Method(OEDMethod):
                 f"Please ensure the model is trained and saved at {model_path}"
             )
         
-        self.model = MPNNPlusPredictor(self.N).to(self.device)
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+        # Original code always used dim=32 (hardcoded in legacy_mpnn_train.py)
+        # The model architecture is independent of N - it works for any graph size
+        # Load checkpoint to infer hidden dimension from saved model
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        
+        # MPNNPlusPredictor uses 'dim' (hidden dimension), not N
+        # Infer dim from lin0.weight shape: [dim, 1]
+        state_dict = checkpoint if isinstance(checkpoint, dict) else (checkpoint.state_dict() if hasattr(checkpoint, 'state_dict') else checkpoint)
+        
+        if 'lin0.weight' in state_dict:
+            saved_dim = state_dict['lin0.weight'].shape[0]
+        else:
+            # Default dim=32 (matching original paper implementation)
+            saved_dim = 32
+        
+        self.model = MPNNPlusPredictor(dim=saved_dim).to(self.device)
+        self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False), strict=True)
         self.model.eval()
         
-        stats = torch.load(stats_path, map_location=self.device)
+        stats = torch.load(stats_path, map_location=self.device, weights_only=False)
         self.mean = stats['mean']
         self.std = stats['std']
         
-        print(f"[NN] Loaded MPNNPlusPredictor model '{self.model_name}' on {self.device}")
+        print(f"[NN] Loaded MPNNPlusPredictor model '{self.model_name}' (dim={saved_dim}) on {self.device}")
     
     def _compute_expected_mocu_matrix(self, w, a_lower_bounds, a_upper_bounds):
         """

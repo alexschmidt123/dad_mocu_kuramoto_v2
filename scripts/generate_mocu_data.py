@@ -172,7 +172,8 @@ def main():
     parser.add_argument('--samples_per_type', type=int, default=37500, 
                         help='Number of samples per coupling type (total = 2 * samples_per_type)')
     parser.add_argument('--K_max', type=int, default=20480, help='Monte Carlo samples for MOCU')
-    parser.add_argument('--train_size', type=int, default=70000, help='Training set size')
+    parser.add_argument('--train_size', type=int, default=70000, 
+                        help='Expected training set size (for reference only, actual split done by training script)')
     parser.add_argument('--output_dir', type=str, default='../data/', help='Output directory (with trailing slash)')
     parser.add_argument('--save_json', action='store_true', help='Save intermediate JSON files')
     args = parser.parse_args()
@@ -195,10 +196,9 @@ def main():
     print(f"Configuration:")
     print(f"  - Number of oscillators: {N}")
     print(f"  - Samples per type: {samples_per_type}")
-    print(f"  - Total samples: {samples_per_type * 2}")
+    print(f"  - Expected total: {samples_per_type * 2} (some may be filtered)")
     print(f"  - Monte Carlo samples (K_max): {K_max}")
-    print(f"  - Training set size: {args.train_size}")
-    print(f"  - Test set size: {samples_per_type * 2 - args.train_size}")
+    print(f"  - Note: Training script will split at 96%%/4%% automatically")
     print("=" * 80)
     
     # Generate Type 1 data
@@ -262,59 +262,34 @@ def main():
     
     total_samples = len(pyg_data_list)
     
-    # Smart split that handles both small and large datasets
-    # For large datasets: keep old behavior (reserve 1000 for test)
-    # For small datasets: use 20% split
+    # Match original paper implementation:
+    # Training script (train_mocu_predictor.py) expects a single file and splits at 96/4
+    # So we output a single combined file, not separate train/test files
+    # The training script will handle the 96/4 split internally
     
-    if total_samples >= 2000:
-        # Large dataset: use original logic (reserve at least 1000 for test)
-        train_size = min(args.train_size, total_samples - 1000)
-        test_size = total_samples - train_size
-    else:
-        # Small dataset: use percentage-based split
-        min_test_samples = max(int(total_samples * 0.2), 10)  # At least 20% or 10 samples
-        
-        if total_samples < min_test_samples:
-            print(f"\n⚠️  Warning: Only {total_samples} samples generated!")
-            print(f"   This is too small for proper train/test split.")
-            print(f"   Consider increasing samples_per_type in config.")
-            train_size = total_samples
-            test_size = 0
-        else:
-            max_train = total_samples - min_test_samples
-            train_size = min(args.train_size, max_train)
-            test_size = total_samples - train_size
+    # Save single combined file (training script will split it)
+    # Use naming convention: {total_samples}_{N}o_train.pth (matches original pattern)
+    output_file = output_dir / f'{total_samples}_{N}o_train.pth'
     
-    train_data = pyg_data_list[:train_size]
-    test_data = pyg_data_list[train_size:] if test_size > 0 else []
-    
-    # Save PyTorch files
-    train_file = output_dir / f'{train_size}_{N}o_train.pth'
-    
-    torch.save(train_data, train_file)
+    torch.save(pyg_data_list, output_file)
     
     print("\n" + "=" * 80)
     print("Dataset Generation Complete!")
     print("=" * 80)
-    print(f"Training set: {train_file} ({train_size} samples)")
-    
-    if test_size > 0:
-        test_file = output_dir / f'{test_size}_{N}o_test.pth'
-        torch.save(test_data, test_file)
-        print(f"Test set:     {test_file} ({test_size} samples)")
-    else:
-        print(f"Test set:     None (dataset too small)")
-    
+    print(f"Combined dataset: {output_file} ({total_samples} samples)")
+    print(f"\nNote: Training script will automatically split this at 96%%/4%% (train/test)")
+    print(f"      Expected train: {int(0.96 * total_samples)} samples")
+    print(f"      Expected test:  {int(0.04 * total_samples)} samples")
     print("=" * 80)
     
-    # Print statistics (only if we have training data)
-    if train_size > 0:
-        train_mocu = [d.y.item() for d in train_data]
-        print(f"\nMOCU Statistics (Training Set):")
-        print(f"  Mean: {np.mean(train_mocu):.6f}")
-        print(f"  Std:  {np.std(train_mocu):.6f}")
-        print(f"  Min:  {np.min(train_mocu):.6f}")
-        print(f"  Max:  {np.max(train_mocu):.6f}")
+    # Print statistics for the full dataset
+    if total_samples > 0:
+        all_mocu = [d.y.item() for d in pyg_data_list]
+        print(f"\nMOCU Statistics (Full Dataset):")
+        print(f"  Mean: {np.mean(all_mocu):.6f}")
+        print(f"  Std:  {np.std(all_mocu):.6f}")
+        print(f"  Min:  {np.min(all_mocu):.6f}")
+        print(f"  Max:  {np.max(all_mocu):.6f}")
 
 
 if __name__ == '__main__':
