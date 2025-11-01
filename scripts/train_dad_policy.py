@@ -378,7 +378,7 @@ def main():
     
     # Load data
     print("Loading trajectory data...")
-    data = torch.load(args.data_path)
+    data = torch.load(args.data_path, weights_only=False)
     trajectories = data['trajectories']
     config = data['config']
     N = config['N']
