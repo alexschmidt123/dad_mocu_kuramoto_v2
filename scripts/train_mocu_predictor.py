@@ -229,10 +229,12 @@ def main():
                     print('         | Test MSE: %.6f (best, saved)' % loss)
 
     # plot and save
-    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, args.name if args.name else "model", model_path_prefix + '/')
+    # Use load_data_name (extracted from folder path) instead of args.name (which might be __USE_OUTPUT_DIR__)
+    plot_name = load_data_name if use_output_dir_directly else args.name
+    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, plot_name, model_path_prefix + '/')
 
     # save some prediction result
-    savePrediction(data, prediction, std, mean, args.name if args.name else "model", model_path_prefix + '/')
+    savePrediction(data, prediction, std, mean, plot_name, model_path_prefix + '/')
 
     if args.debug:
         printInstance(data, prediction, std, mean)

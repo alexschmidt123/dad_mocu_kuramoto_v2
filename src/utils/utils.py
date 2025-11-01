@@ -17,7 +17,15 @@ def plotCurves(train_MSE, train_rank, test_MSE, EPOCH, name, output_dir='../mode
     plt.legend()
     name = name.split('.')[0]
     output_dir = output_dir if output_dir.endswith('/') else output_dir + '/'
-    plt.savefig(output_dir + name + '/curve.png')
+    # If name is empty or None, save directly to output_dir; otherwise create subfolder
+    if name and name.strip() and name != '__USE_OUTPUT_DIR__':
+        save_path = output_dir + name + '/'
+        # Ensure directory exists
+        import os
+        os.makedirs(save_path, exist_ok=True)
+        plt.savefig(save_path + 'curve.png')
+    else:
+        plt.savefig(output_dir + 'curve.png')
 
     plt.clf()
 
@@ -27,7 +35,10 @@ def plotCurves(train_MSE, train_rank, test_MSE, EPOCH, name, output_dir='../mode
     plt.xlabel('epoch')
     plt.ylabel('Mean Square Error')
     plt.legend()
-    plt.savefig(output_dir + name + '/curve2.png')
+    if name and name.strip() and name != '__USE_OUTPUT_DIR__':
+        plt.savefig(save_path + 'curve2.png')
+    else:
+        plt.savefig(output_dir + 'curve2.png')
 
 def savePrediction(data, prediction, std, mean, name, output_dir='../models/'):
     result = np.zeros([len(data.y), 2])
@@ -38,10 +49,20 @@ def savePrediction(data, prediction, std, mean, name, output_dir='../models/'):
 
     df = pd.DataFrame(result)
     output_dir = output_dir if output_dir.endswith('/') else output_dir + '/'
-    name = name.split('.')[0]
+    name = name.split('.')[0] if name else ''
+
+    # If name is empty or None, save directly to output_dir; otherwise create subfolder
+    if name and name.strip() and name != '__USE_OUTPUT_DIR__':
+        save_path = output_dir + name + '/'
+        # Ensure directory exists
+        import os
+        os.makedirs(save_path, exist_ok=True)
+        excel_path = save_path + 'Prediction.xlsx'
+    else:
+        excel_path = output_dir + 'Prediction.xlsx'
 
     # Fix for newer pandas versions
-    with pd.ExcelWriter(output_dir + name + '/Prediction.xlsx', engine='openpyxl') as writer:
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='page_1', float_format='%.9f')
 
 
