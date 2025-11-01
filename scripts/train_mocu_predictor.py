@@ -127,23 +127,29 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     output_dir_str = str(output_dir) + '/' if not str(output_dir).endswith('/') else str(output_dir)
     
-    # Model folder: if name is provided, append it; otherwise use output_dir directly
+    # Model folder: if name is provided and not empty, append it; otherwise use output_dir directly
     # This allows run.sh to pass the exact timestamp folder path
-    if args.name:
+    # Special marker "__USE_OUTPUT_DIR__" or empty string means use output_dir directly
+    use_output_dir_directly = (not args.name or args.name.strip() == '' or args.name == '__USE_OUTPUT_DIR__')
+    
+    if not use_output_dir_directly:  # Name is provided and meaningful
         model_dir = output_dir_str + args.name
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
         model_path_prefix = output_dir_str + args.name
         load_data_output_dir = output_dir_str
         load_data_name = args.name
+        print(f"[train_mocu_predictor] Using name '{args.name}': saving to {model_path_prefix}/")
     else:
-        # No name provided - use output_dir directly (run.sh passes exact timestamp folder)
+        # No name provided or empty - use output_dir directly (run.sh passes exact timestamp folder)
         model_dir = output_dir_str.rstrip('/')
         model_path_prefix = output_dir_str.rstrip('/')
         # Extract folder name from path for loadData
         model_path_prefix_path = Path(model_path_prefix)
         load_data_output_dir = str(model_path_prefix_path.parent) + '/'
         load_data_name = model_path_prefix_path.name
+        print(f"[train_mocu_predictor] No name provided - using output_dir as model folder: {model_path_prefix}")
+        print(f"[train_mocu_predictor] Statistics will be saved to: {load_data_output_dir}{load_data_name}/statistics.pth")
     
     train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, load_data_name, load_data_output_dir)
     print('Making Model...')

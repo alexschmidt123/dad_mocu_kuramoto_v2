@@ -8,7 +8,7 @@ sequentially to minimize terminal MOCU (Model-based Objective-based Characteriza
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import NNConv, Set2Set, global_mean_pool
+from torch_geometric.nn import NNConv, Set2Set, global_mean_pool, global_max_pool
 from torch_geometric.data import Data, Batch
 from torch.nn import Sequential, Linear, ReLU, GRU
 import numpy as np
@@ -126,19 +126,37 @@ class DADPolicyNetwork(nn.Module):
             torch.backends.cudnn.enabled = cudnn_enabled
         
         # Graph-level pooling
-        # Set2Set uses LSTM internally - disable cuDNN to avoid stream mismatch
-        cudnn_enabled = torch.backends.cudnn.enabled
-        try:
-            torch.backends.cudnn.enabled = False
-            if batch is not None:
+        # Set2Set uses LSTM internally which can cause cuDNN stream mismatch errors
+        # For single graphs (no batch), use simpler pooling to avoid cuDNN issues
+        # For batched graphs, we still need Set2Set but with cuDNN disabled
+        if batch is not None:
+            # Batched case - use Set2Set with cuDNN disabled
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            cudnn_enabled = torch.backends.cudnn.enabled
+            cudnn_benchmark = torch.backends.cudnn.benchmark
+            try:
+                torch.backends.cudnn.enabled = False
+                torch.backends.cudnn.benchmark = False
+                if batch.device != device:
+                    batch = batch.to(device)
+                if not batch.is_contiguous():
+                    batch = batch.contiguous()
+                if not out.is_contiguous():
+                    out = out.contiguous()
                 out = self.set2set(out, batch)  # [batch_size, 2 * encoding_dim]
-            else:
-                # Single graph - ensure batch tensor is on correct device
-                batch_tensor = torch.zeros(out.size(0), dtype=torch.long, device=device)
-                out = self.set2set(out, batch_tensor)
-                out = out.unsqueeze(0)  # [1, 2 * encoding_dim]
-        finally:
-            torch.backends.cudnn.enabled = cudnn_enabled
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
+            finally:
+                torch.backends.cudnn.enabled = cudnn_enabled
+                torch.backends.cudnn.benchmark = cudnn_benchmark
+        else:
+            # Single graph case - use mean+max pooling instead of Set2Set to avoid cuDNN issues
+            # This avoids the LSTM in Set2Set which causes stream mismatch
+            batch_tensor = torch.zeros(out.size(0), dtype=torch.long, device=device)
+            mean_pool = global_mean_pool(out, batch_tensor)  # [1, encoding_dim]
+            max_pool = global_max_pool(out, batch_tensor)    # [1, encoding_dim]
+            out = torch.cat([mean_pool, max_pool], dim=-1)    # [1, 2 * encoding_dim]
         
         state_embedding = self.graph_mlp(out)  # [batch_size, hidden_dim]
         

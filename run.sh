@@ -163,10 +163,11 @@ ABS_MODEL_RUN_FOLDER=$(cd "$MODEL_RUN_FOLDER" && pwd)
 
 cd scripts
 # Save model directly to the timestamped folder
-# Pass the full path to the timestamp folder as output_dir, and use empty name
+# Pass the full path to the timestamp folder as output_dir, and use a special marker for empty name
 # This way train_mocu_predictor.py saves directly to models/fast_config/11012025_163858/
+# Note: Using "__USE_OUTPUT_DIR__" as a marker since bash might not pass empty string correctly
 python train_mocu_predictor.py \
-    --name "" \
+    --name "__USE_OUTPUT_DIR__" \
     --data_path "$ABS_TRAIN_FILE" \
     --EPOCH $EPOCHS \
     --Constrain_weight $CONSTRAIN_WEIGHT \
