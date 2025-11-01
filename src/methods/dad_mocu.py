@@ -2,8 +2,12 @@
 DAD-MOCU Method (Deep Adaptive Design for MOCU)
 
 Uses a trained policy network to sequentially select experiments
-that minimize terminal MOCU. The policy is learned via imitation learning
-or reinforcement learning on sequential experimental design trajectories.
+that minimize terminal MOCU. The policy is learned via REINFORCE 
+(reinforcement learning) that directly optimizes terminal MOCU as the loss.
+
+Training: REINFORCE policy gradient with terminal MOCU as reward signal.
+This directly optimizes the true objective (minimize terminal MOCU) rather
+than mimicking a suboptimal expert policy.
 
 In the paper: "DAD" method (proposed)
 """
@@ -95,30 +99,33 @@ class DAD_MOCU_Method(OEDMethod):
         
         The policy network takes the current state (w, bounds, history)
         and outputs a probability distribution over available experiments.
-        We select the experiment with highest probability (greedy).
+        We select the experiment with highest probability (greedy/deterministic).
         
         Args:
-            w: Natural frequencies
-            a_lower_bounds: Current lower bounds
-            a_upper_bounds: Current upper bounds
+            w: Natural frequencies [N]
+            a_lower_bounds: Current lower bounds [N, N]
+            a_upper_bounds: Current upper bounds [N, N]
             criticalK: Critical coupling strengths (not used by policy)
             isSynchronized: Synchronization status (not used by policy)
-            history: List of (selected_pair, observation) tuples
+            history: List of ((i, j), observation) tuples from run_episode
         
         Returns:
             (i, j): Selected experiment pair
         """
+        # Convert history format: from [((i,j), obs), ...] to [(i, j, obs), ...]
+        history_list = []
+        observed_pairs = set()
+        if history:
+            for pair_obs in history:
+                if isinstance(pair_obs, tuple) and len(pair_obs) == 2:
+                    (i, j), obs = pair_obs
+                    history_list.append((i, j, int(obs)))
+                    observed_pairs.add((i, j))
+        
         # Create state data for policy network
-        state_data = create_state_data(
-            w,
-            a_lower_bounds,
-            a_upper_bounds,
-            history,
-            N=self.N
-        ).to(self.device)
+        state_data = create_state_data(w, a_lower_bounds, a_upper_bounds, device=self.device)
         
         # Get available pairs (not yet observed)
-        observed_pairs = set([pair for pair, _ in history])
         available_pairs = []
         for i in range(self.N):
             for j in range(i + 1, self.N):
@@ -129,43 +136,32 @@ class DAD_MOCU_Method(OEDMethod):
             print("[DAD-MOCU] Warning: No available experiments left!")
             return -1, -1
         
-        # Convert available pairs to action mask
-        # Action index = i * (2N - i - 1) // 2 + (j - i - 1)
+        # Create available actions mask (1 = available, 0 = observed)
         num_actions = self.N * (self.N - 1) // 2
-        action_mask = torch.zeros(num_actions, dtype=torch.bool)
-        pair_to_action_idx = {}
+        available_mask = np.ones(num_actions, dtype=np.float32)
+        for (i_obs, j_obs) in observed_pairs:
+            action_idx = self.policy_net.pair_to_idx(i_obs, j_obs)
+            available_mask[action_idx] = 0.0
         
-        for i in range(self.N):
-            for j in range(i + 1, self.N):
-                action_idx = i * (2 * self.N - i - 1) // 2 + (j - i - 1)
-                pair_to_action_idx[(i, j)] = action_idx
-                if (i, j) in available_pairs:
-                    action_mask[action_idx] = True
+        available_mask_tensor = torch.tensor([available_mask], dtype=torch.float32, device=self.device)
         
-        # Get policy logits
+        # Convert history to tensor format expected by policy network
+        if len(history_list) == 0:
+            history_tensor = None
+        else:
+            history_tensor = torch.tensor([history_list], dtype=torch.long, device=self.device)
+        
+        # Get policy action probabilities (greedy/deterministic)
         with torch.no_grad():
-            logits = self.policy_net(state_data, history)  # [1, num_actions]
+            self.policy_net.eval()
+            action_logits, action_probs = self.policy_net(state_data, history_tensor, available_mask_tensor)
         
-        # Mask out unavailable actions
-        logits = logits.squeeze(0)  # [num_actions]
-        logits[~action_mask] = -float('inf')
+        # Select action with highest probability (deterministic)
+        action_probs = action_probs.squeeze(0)  # [num_actions]
+        action_idx = torch.argmax(action_probs).item()
         
-        # Select action with highest probability (greedy)
-        action_idx = torch.argmax(logits).item()
-        
-        # Convert action index back to (i, j) pair
-        selected_pair = None
-        for pair, idx in pair_to_action_idx.items():
-            if idx == action_idx:
-                selected_pair = pair
-                break
-        
-        if selected_pair is None:
-            print(f"[DAD-MOCU] Error: Could not convert action {action_idx} to pair!")
-            return -1, -1
-        
-        i, j = selected_pair
-        print(f"[DAD-MOCU] Selected pair ({i}, {j}) via policy network")
+        # Convert action index to (i, j) pair using policy network method
+        i, j = self.policy_net.idx_to_pair(action_idx)
         
         return i, j
 

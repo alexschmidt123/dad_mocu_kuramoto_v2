@@ -191,7 +191,7 @@ if echo "$METHODS" | grep -q "DAD"; then
     
     # Step 2.5a: Generate DAD trajectory data
     echo "  [2.5a] Generating DAD trajectory data..."
-    echo "  This uses the trained MPNN to generate expert trajectories..."
+    echo "  Using random expert (fast) - REINFORCE doesn't need expert labels, only a_true for experiments..."
     
     # Create DAD data folder
     mkdir -p "${DATA_FOLDER}dad/"
@@ -199,17 +199,18 @@ if echo "$METHODS" | grep -q "DAD"; then
     # Convert to absolute path for DAD data generation
     ABS_DAD_DATA_FOLDER=$(cd "${DATA_FOLDER}dad/" && pwd)
     
+    # Generate DAD training data (random expert - fast, sufficient for REINFORCE)
+    # REINFORCE doesn't use expert actions, only needs a_true for experiments
     cd scripts
     python generate_dad_data.py \
         --N $N \
         --num-episodes 100 \
         --K 4 \
-        --K-max $K_MAX \
         --output-dir "$ABS_DAD_DATA_FOLDER"
     cd ..
     
-    # Find the generated trajectory file
-    DAD_TRAJECTORY_FILE=$(find "${DATA_FOLDER}dad/" -name "dad_trajectories_N${N}_K4_*.pth" -type f 2>/dev/null | head -1)
+    # Find the generated trajectory file (always uses 'random' expert now)
+    DAD_TRAJECTORY_FILE=$(find "${DATA_FOLDER}dad/" -name "dad_trajectories_N${N}_K4_random.pth" -type f 2>/dev/null | head -1)
     
     if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
         echo -e "${RED}Error: DAD trajectory file not found${NC}"
@@ -223,16 +224,48 @@ if echo "$METHODS" | grep -q "DAD"; then
     echo "  [2.5b] Training DAD policy network..."
     echo "  This may take 30-60 minutes..."
     
+    # Check for training method in config (default: reinforce - RL with direct MOCU optimization)
+    DAD_METHOD=$(grep "dad_method:" $CONFIG_FILE | awk '{print $2}' | tr -d '"' || echo "reinforce")
+    
+    if [ "$DAD_METHOD" != "imitation" ] && [ "$DAD_METHOD" != "reinforce" ]; then
+        echo -e "${YELLOW}Warning: Unknown DAD method '$DAD_METHOD', defaulting to 'reinforce' (RL with direct MOCU optimization)${NC}"
+        DAD_METHOD="reinforce"
+    fi
+    
+    echo "  Training method: $DAD_METHOD"
+    if [ "$DAD_METHOD" = "reinforce" ]; then
+        echo -e "${BLUE}  Using REINFORCE (direct MOCU optimization)${NC}"
+    else
+        echo -e "${BLUE}  Using Imitation Learning (behavior cloning)${NC}"
+    fi
+    
     # Convert paths to absolute for DAD training
     ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$DAD_TRAJECTORY_FILE")
+    
+    # Check if MPNN predictor is available for fast MOCU prediction
+    USE_PREDICTED_MOCU=""
+    if [ "$DAD_METHOD" = "reinforce" ]; then
+        # Check if MPNN model exists (same name as MPNN predictor)
+        # Use PROJECT_ROOT from script beginning
+        MPNN_MODEL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/models/${TRAINED_MODEL_NAME}/model.pth"
+        if [ -f "$MPNN_MODEL_PATH" ]; then
+            USE_PREDICTED_MOCU="--use-predicted-mocu"
+            echo -e "${BLUE}  Using MPNN predictor for fast MOCU estimation${NC}"
+        else
+            echo -e "${YELLOW}  Warning: MPNN predictor not found. Using slow CUDA MOCU computation.${NC}"
+            echo -e "${YELLOW}  To speed up: Train MPNN first, then DAD training will use fast prediction${NC}"
+        fi
+    fi
     
     cd scripts
     python train_dad_policy.py \
         --data-path "$ABS_DAD_TRAJ_FILE" \
+        --method "$DAD_METHOD" \
         --name "dad_policy_N${N}" \
         --epochs 100 \
         --batch-size 64 \
-        --output-dir "$ABS_MODEL_FOLDER"
+        --output-dir "$ABS_MODEL_FOLDER" \
+        $USE_PREDICTED_MOCU
     cd ..
     
     # Copy DAD policy to project models directory for evaluation

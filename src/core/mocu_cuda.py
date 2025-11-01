@@ -296,8 +296,31 @@ task = mod.get_function("task")
 
 def MOCU(K_max, w, N, h, M, T, aLowerBoundIn, aUpperBoundIn, seed):
     # seed = 0
+    # Validate and adjust block configuration
     blocks = 128
     block_size = int(K_max / blocks)
+    
+    # Ensure block_size is valid (must be > 0 and power of 2 is better)
+    if block_size <= 0:
+        # Fallback: use fewer blocks if K_max is too small
+        blocks = max(1, K_max // 32)  # Ensure at least 32 threads per block
+        block_size = K_max // blocks if blocks > 0 else K_max
+    
+    # Ensure total threads match K_max exactly
+    total_threads = blocks * block_size
+    if total_threads != K_max:
+        # Adjust to match exactly
+        blocks = (K_max + block_size - 1) // block_size  # Ceiling division
+        block_size = K_max // blocks if blocks > 0 else K_max
+        total_threads = blocks * block_size
+    
+    # Safety check: ensure valid CUDA grid/block configuration
+    if blocks <= 0 or block_size <= 0:
+        raise ValueError(f"Invalid CUDA configuration: blocks={blocks}, block_size={block_size}, K_max={K_max}")
+    
+    if block_size > 1024:  # CUDA limit
+        blocks = (K_max + 1023) // 1024
+        block_size = min(1024, K_max // blocks if blocks > 0 else 1024)
 
     w = np.append(w, 0.5 * np.mean(w))
 
@@ -316,9 +339,36 @@ def MOCU(K_max, w, N, h, M, T, aLowerBoundIn, aUpperBoundIn, seed):
     else:
         rand_data = np.random.RandomState(int(seed)).uniform(size=int((N - 1) * N / 2.0 * K_max))
 
-    task(drv.In(a), drv.In(rand_data), drv.Out(a_save), drv.In(w),
-         np.float64(h), np.intc(N), np.intc(M), drv.In(vec_a_lower),
-         drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
+    # Add error handling for CUDA kernel launch
+    try:
+        task(drv.In(a), drv.In(rand_data), drv.Out(a_save), drv.In(w),
+             np.float64(h), np.intc(N), np.intc(M), drv.In(vec_a_lower),
+             drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
+    except drv.LogicError as e:
+        # CUDA context or resource error - try to recover
+        error_msg = str(e)
+        if "cuFuncSetBlockShape" in error_msg or "invalid resource handle" in error_msg:
+            # Clear CUDA context and retry once
+            try:
+                # Try to get current context and reset if possible
+                ctx = drv.Context.get_current()
+                if ctx is not None:
+                    ctx.pop()
+                    ctx.push()
+                
+                # Retry with same configuration
+                task(drv.In(a), drv.In(rand_data), drv.Out(a_save), drv.In(w),
+                     np.float64(h), np.intc(N), np.intc(M), drv.In(vec_a_lower),
+                     drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
+            except Exception as retry_error:
+                raise RuntimeError(
+                    f"CUDA kernel launch failed: {error_msg}. "
+                    f"Retry also failed: {retry_error}. "
+                    f"This may be due to CUDA context conflict with PyTorch. "
+                    f"Try running MOCU computation in a separate process."
+                ) from e
+        else:
+            raise
 
     # print("a_save")
     # print(a_save)

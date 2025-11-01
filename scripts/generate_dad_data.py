@@ -1,9 +1,8 @@
 """
 Generate trajectory data for training DAD (Deep Adaptive Design) policy network.
 
-This script generates sequential decision trajectories where each episode represents
-a K-step experimental design process. The policy learns from expert demonstrations
-(using iNN or other methods) to minimize terminal MOCU.
+This script generates sequential decision trajectories for REINFORCE training.
+Uses random expert (fast) - REINFORCE doesn't need expert labels, only a_true.
 """
 
 import sys
@@ -16,7 +15,6 @@ import random
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.core.mocu_cuda import MOCU
 from src.core.sync_detection import mocu_comp
 import numpy as np
 import torch
@@ -65,49 +63,6 @@ def generate_random_system(N):
     return w, a_lower_bound, a_upper_bound, a_true, init_sync
 
 
-def compute_expected_remaining_mocu_greedy(w, N, a_lower, a_upper, K_max, h, M, T):
-    """
-    Compute expected remaining MOCU for each possible experiment (greedy ODE-style).
-    This is used as the expert policy for imitation learning.
-    
-    Returns:
-        R: [N, N] matrix of expected MOCUs
-    """
-    R = np.zeros((N, N))
-    
-    for i in range(N):
-        for j in range(i + 1, N):
-            w_i = w[i]
-            w_j = w[j]
-            f_inv = 0.5 * np.abs(w_i - w_j)
-            
-            # Scenario 1: Observe synchronization
-            a_lower_sync = a_lower.copy()
-            a_upper_sync = a_upper.copy()
-            
-            a_tilde = min(max(f_inv, a_lower[i, j]), a_upper[i, j])
-            a_lower_sync[j, i] = a_tilde
-            a_lower_sync[i, j] = a_tilde
-            P_sync = (a_upper[i, j] - a_tilde) / (a_upper[i, j] - a_lower[i, j] + 1e-9)
-            
-            MOCU_sync = MOCU(K_max, w, N, h, M, T, a_lower_sync, a_upper_sync, 0)
-            
-            # Scenario 2: Observe non-synchronization
-            a_lower_nonsync = a_lower.copy()
-            a_upper_nonsync = a_upper.copy()
-            
-            a_upper_nonsync[i, j] = min(f_inv, a_upper_nonsync[i, j])
-            a_upper_nonsync[j, i] = a_upper_nonsync[i, j]
-            P_nonsync = 1 - P_sync
-            
-            MOCU_nonsync = MOCU(K_max, w, N, h, M, T, a_lower_nonsync, a_upper_nonsync, 0)
-            
-            # Expected remaining MOCU
-            R[i, j] = P_sync * MOCU_sync + P_nonsync * MOCU_nonsync
-    
-    return R
-
-
 def perform_experiment(a_true, i, j, w, h, M):
     """
     Perform experiment on pair (i, j) and observe if synchronized.
@@ -146,15 +101,15 @@ def update_bounds(a_lower, a_upper, i, j, observation, w):
     return a_lower_new, a_upper_new
 
 
-def generate_trajectory(N, K, expert_type='greedy_mocu', K_max=20480, verbose=False):
+def generate_trajectory(N, K, verbose=False):
     """
-    Generate a single trajectory using expert policy.
+    Generate a single trajectory using random expert policy.
+    
+    For REINFORCE training: Random expert is sufficient (REINFORCE doesn't use expert actions).
     
     Args:
         N: Number of oscillators
         K: Number of sequential experiments
-        expert_type: 'greedy_mocu' for ODE-style greedy policy
-        K_max: Monte Carlo samples for MOCU computation
         verbose: Print progress
     
     Returns:
@@ -175,14 +130,12 @@ def generate_trajectory(N, K, expert_type='greedy_mocu', K_max=20480, verbose=Fa
     M = int(T / h)
     
     # Initialize trajectory
+    # NOTE: 'a_true' is REQUIRED for REINFORCE - needed to simulate experiments during policy rollouts.
     trajectory = {
-        'w': w,
-        'a_true': a_true,
-        'states': [(a_lower_0.copy(), a_upper_0.copy())],
-        'actions': [],
-        'observations': [],
-        'mocus': [],
-        'available_masks': []
+        'w': w,                                    # Natural frequencies [N]
+        'a_true': a_true,                          # Ground truth coupling [N, N] - REQUIRED
+        'states': [(a_lower_0.copy(), a_upper_0.copy())],  # Initial bounds in states[0]
+        'actions': []                              # Expert actions (only used to determine trajectory length K)
     }
     
     # Track which pairs have been observed
@@ -191,54 +144,11 @@ def generate_trajectory(N, K, expert_type='greedy_mocu', K_max=20480, verbose=Fa
     a_lower = a_lower_0.copy()
     a_upper = a_upper_0.copy()
     
-    # Compute initial MOCU
-    mocu_0 = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
-    trajectory['mocus'].append(mocu_0)
-    
-    if verbose:
-        print(f"Initial MOCU: {mocu_0:.6f}")
-    
     # Run K steps
     for step in range(K):
-        # Create availability mask
-        num_actions = N * (N - 1) // 2
-        available_mask = np.ones(num_actions, dtype=int)
-        
-        action_idx = 0
-        for i in range(N):
-            for j in range(i + 1, N):
-                if (i, j) in observed_pairs:
-                    available_mask[action_idx] = 0
-                action_idx += 1
-        
-        trajectory['available_masks'].append(available_mask)
-        
-        # Expert policy: select action
-        if expert_type == 'greedy_mocu':
-            # Compute expected remaining MOCU for all available pairs
-            R = compute_expected_remaining_mocu_greedy(w, N, a_lower, a_upper, K_max, h, M, T)
-            
-            # Mask out observed pairs
-            for (i_obs, j_obs) in observed_pairs:
-                R[i_obs, j_obs] = np.inf
-            
-            # Select minimum
-            min_ind = np.where(R == np.min(R[np.nonzero(R)]))
-            if len(min_ind[0]) > 0:
-                i_selected = int(min_ind[0][0])
-                j_selected = int(min_ind[1][0])
-            else:
-                # Fallback: random available pair
-                available_pairs = [(i, j) for i in range(N) for j in range(i+1, N) if (i, j) not in observed_pairs]
-                i_selected, j_selected = random.choice(available_pairs)
-        
-        elif expert_type == 'random':
-            # Random policy
-            available_pairs = [(i, j) for i in range(N) for j in range(i+1, N) if (i, j) not in observed_pairs]
-            i_selected, j_selected = random.choice(available_pairs)
-        
-        else:
-            raise ValueError(f"Unknown expert_type: {expert_type}")
+        # Random expert policy (sufficient for REINFORCE - expert actions not used during training)
+        available_pairs = [(i, j) for i in range(N) for j in range(i+1, N) if (i, j) not in observed_pairs]
+        i_selected, j_selected = random.choice(available_pairs)
         
         # Perform experiment
         observation = perform_experiment(a_true, i_selected, j_selected, w, h, M)
@@ -246,21 +156,14 @@ def generate_trajectory(N, K, expert_type='greedy_mocu', K_max=20480, verbose=Fa
         # Update bounds
         a_lower, a_upper = update_bounds(a_lower, a_upper, i_selected, j_selected, observation, w)
         
-        # Compute MOCU
-        mocu_new = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
-        
-        # Record
+        # Record trajectory data
         trajectory['actions'].append((i_selected, j_selected))
-        trajectory['observations'].append(observation)
         trajectory['states'].append((a_lower.copy(), a_upper.copy()))
-        trajectory['mocus'].append(mocu_new)
         
         observed_pairs.add((i_selected, j_selected))
         
         if verbose:
-            print(f"Step {step+1}: Selected ({i_selected},{j_selected}), Obs={observation}, MOCU={mocu_new:.6f}")
-    
-    trajectory['terminal_MOCU'] = trajectory['mocus'][-1]
+            print(f"Step {step+1}: Selected ({i_selected},{j_selected}), Obs={observation}")
     
     return trajectory
 
@@ -270,9 +173,7 @@ def main():
     parser.add_argument('--N', type=int, default=5, help='Number of oscillators')
     parser.add_argument('--K', type=int, default=4, help='Number of sequential experiments')
     parser.add_argument('--num-episodes', type=int, default=1000, help='Number of trajectories to generate')
-    parser.add_argument('--expert-type', type=str, default='greedy_mocu', 
-                       choices=['greedy_mocu', 'random'], help='Expert policy type')
-    parser.add_argument('--K-max', type=int, default=20480, help='Monte Carlo samples for MOCU')
+    # Note: Removed expert-type and K-max - always use random expert for REINFORCE
     parser.add_argument('--output-dir', type=str, default='../data/', help='Output directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     args = parser.parse_args()
@@ -291,8 +192,7 @@ def main():
     print(f"  - Number of oscillators (N): {args.N}")
     print(f"  - Sequential experiments (K): {args.K}")
     print(f"  - Number of episodes: {args.num_episodes}")
-    print(f"  - Expert policy: {args.expert_type}")
-    print(f"  - K_max (MOCU samples): {args.K_max}")
+    print(f"  - Expert policy: random (for REINFORCE training)")
     print("=" * 80)
     
     trajectories = []
@@ -303,8 +203,6 @@ def main():
         trajectory = generate_trajectory(
             N=args.N,
             K=args.K,
-            expert_type=args.expert_type,
-            K_max=args.K_max,
             verbose=False
         )
         
@@ -323,27 +221,18 @@ def main():
     print(f"\n✓ Generated {len(trajectories)} valid trajectories")
     
     # Save data
-    output_file = output_dir / f'dad_trajectories_N{args.N}_K{args.K}_{args.expert_type}.pth'
+    output_file = output_dir / f'dad_trajectories_N{args.N}_K{args.K}_random.pth'
     torch.save({
         'trajectories': trajectories,
         'config': {
             'N': args.N,
             'K': args.K,
-            'expert_type': args.expert_type,
-            'K_max': args.K_max,
+            'expert_type': 'random',
             'num_episodes': len(trajectories)
         }
     }, output_file)
     
     print(f"✓ Saved to: {output_file}")
-    
-    # Print statistics
-    terminal_mocus = [t['terminal_MOCU'] for t in trajectories]
-    print(f"\nTerminal MOCU Statistics:")
-    print(f"  Mean: {np.mean(terminal_mocus):.6f}")
-    print(f"  Std:  {np.std(terminal_mocus):.6f}")
-    print(f"  Min:  {np.min(terminal_mocus):.6f}")
-    print(f"  Max:  {np.max(terminal_mocus):.6f}")
     
     print("\n" + "=" * 80)
     print("Data generation complete!")
