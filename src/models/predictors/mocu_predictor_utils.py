@@ -34,8 +34,33 @@ def load_mpnn_predictor(model_name, device='cuda'):
     """
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     
-    model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
-    stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
+    # New structure: models/{config_name}/{timestamp}/model.pth
+    # But also support old structure: models/{model_name}/model.pth
+    # Try new structure first (timestamped), then fall back to old
+    model_path = None
+    stats_path = None
+    
+    # Check if model_name contains timestamp (format: config_timestamp)
+    # If so, it's in models/{config_name}/{timestamp}/
+    if '_' in model_name and len(model_name.split('_')) >= 2:
+        parts = model_name.split('_')
+        # Last part is timestamp, rest is config name
+        timestamp = parts[-1]
+        config_name = '_'.join(parts[:-1])
+        # Try timestamped path first
+        candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
+        candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
+        if candidate_model.exists() and candidate_stats.exists():
+            model_path = candidate_model
+            stats_path = candidate_stats
+        else:
+            # Fall back to flat structure
+            model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
+            stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
+    else:
+        # Old structure: models/{model_name}/
+        model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
+        stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
     
     if not model_path.exists() or not stats_path.exists():
         raise FileNotFoundError(

@@ -96,8 +96,7 @@ class DADPolicyNetwork(nn.Module):
         # Ensure we're on the correct device (model's device)
         device = next(self.parameters()).device
         
-        # Ensure all state_data components are on correct device
-        # This is critical for cuDNN operations which require all tensors on same device/stream
+        # Ensure all state_data components are on correct device BEFORE extracting
         state_data = state_data.to(device)
         
         # Node features
@@ -106,20 +105,25 @@ class DADPolicyNetwork(nn.Module):
         edge_attr = state_data.edge_attr  # [num_edges, 2]
         batch = state_data.batch if hasattr(state_data, 'batch') else None
         
-        # Initial embedding
+        # Initial embedding (same pattern as MPNNPlusPredictor which works)
         out = F.relu(self.lin0(x))  # [batch_size * N, encoding_dim]
-        # Initialize hidden state - ensure it's contiguous for cuDNN
-        h = out.unsqueeze(0).contiguous()  # [1, batch_size * N, encoding_dim]
+        h = out.unsqueeze(0)  # [1, batch_size * N, encoding_dim]
         
-        # Message passing
-        for _ in range(3):
-            m = F.relu(self.conv(out, edge_index, edge_attr))
-            # Ensure inputs are contiguous and on same device before GRU (critical for cuDNN)
-            m_seq = m.unsqueeze(0).contiguous()
-            # Ensure h is also contiguous (required by cuDNN)
-            h = h.contiguous()
-            out, h = self.gru(m_seq, h)
-            out = out.squeeze(0)
+        # Message passing (same pattern as MPNNPlusPredictor)
+        # Temporarily disable cuDNN to avoid stream mismatch issues
+        # This is a workaround for CUDNN_STATUS_BAD_PARAM_STREAM_MISMATCH
+        cudnn_enabled = torch.backends.cudnn.enabled
+        try:
+            # Disable cuDNN for this operation to avoid stream issues
+            torch.backends.cudnn.enabled = False
+            for _ in range(3):
+                m = F.relu(self.conv(out, edge_index, edge_attr))
+                m_input = m.unsqueeze(0)  # [1, batch_size * N, encoding_dim]
+                out, h = self.gru(m_input, h)
+                out = out.squeeze(0)
+        finally:
+            # Restore original cuDNN setting
+            torch.backends.cudnn.enabled = cudnn_enabled
         
         # Graph-level pooling
         if batch is not None:

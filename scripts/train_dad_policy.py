@@ -446,8 +446,9 @@ def main():
             if use_predicted_mocu:
                 try:
                     from src.models.predictors.mocu_predictor_utils import load_mpnn_predictor
-                    # Get model name from config or use default (same as iNN/NN)
-                    model_name = config.get('mocu_model_name', f'cons{N}')
+                    # Get model name from environment variable (set by run.sh) or config, or use default
+                    import os
+                    model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name') or f'cons{N}'
                     mocu_model, mocu_mean, mocu_std = load_mpnn_predictor(model_name=model_name, device=str(device))
                     print(f"[REINFORCE] Using MPNN predictor '{model_name}' for fast MOCU estimation")
                 except FileNotFoundError as e:

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-def plotCurves(train_MSE, train_rank, test_MSE, EPOCH, name):
+def plotCurves(train_MSE, train_rank, test_MSE, EPOCH, name, output_dir='../models/'):
     exp_MSE = 0.00021
     print(f"best test MSE: {np.min(test_MSE):.12f};   experiment MSE error: 0.000015794911;   data variance: "
           f"0.045936428010")
@@ -16,7 +16,8 @@ def plotCurves(train_MSE, train_rank, test_MSE, EPOCH, name):
     plt.ylabel('Mean Square Error')
     plt.legend()
     name = name.split('.')[0]
-    plt.savefig( '../models/' + name + '/curve.png')
+    output_dir = output_dir if output_dir.endswith('/') else output_dir + '/'
+    plt.savefig(output_dir + name + '/curve.png')
 
     plt.clf()
 
@@ -26,9 +27,9 @@ def plotCurves(train_MSE, train_rank, test_MSE, EPOCH, name):
     plt.xlabel('epoch')
     plt.ylabel('Mean Square Error')
     plt.legend()
-    plt.savefig('../models/' + name + '/curve2.png')
+    plt.savefig(output_dir + name + '/curve2.png')
 
-def savePrediction(data, prediction, std, mean, name):
+def savePrediction(data, prediction, std, mean, name, output_dir='../models/'):
     result = np.zeros([len(data.y), 2])
     prediction = prediction * std + mean
     prediction = prediction.cpu().detach().numpy()
@@ -36,9 +37,11 @@ def savePrediction(data, prediction, std, mean, name):
     result[:, 1] = np.asarray([d * std + mean for d in data.y.cpu()]).flatten()
 
     df = pd.DataFrame(result)
+    output_dir = output_dir if output_dir.endswith('/') else output_dir + '/'
+    name = name.split('.')[0]
 
     # Fix for newer pandas versions
-    with pd.ExcelWriter('../models/' + name + '/Prediction.xlsx', engine='openpyxl') as writer:
+    with pd.ExcelWriter(output_dir + name + '/Prediction.xlsx', engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='page_1', float_format='%.9f')
 
 

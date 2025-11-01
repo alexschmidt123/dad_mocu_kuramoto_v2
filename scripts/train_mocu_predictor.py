@@ -77,12 +77,14 @@ def getArg():
                         help='rank loss weight')
     parser.add_argument('--multiple_model', action='store_true',
                         help='use multiple models for test')
+    parser.add_argument('--output_dir', type=str, default='../models/',
+                        help='Output directory for models, plots, and statistics')
 
     args = parser.parse_args()
     return args
 
 
-def loadData(test_only, data_path, pretrain, name):
+def loadData(test_only, data_path, pretrain, name, output_dir):
 
     print('Preparing data...')
     data_list = torch.load(data_path)
@@ -90,7 +92,7 @@ def loadData(test_only, data_path, pretrain, name):
     if test_only:
         model_paths = pretrain.split('+')
         pretrain = model_paths[0]
-        statistics = torch.load('../models/' + pretrain + '/statistics.pth')
+        statistics = torch.load(output_dir + pretrain + '/statistics.pth')
         mean = statistics['mean']
         std = statistics['std']
         for d in data_list:
@@ -108,7 +110,7 @@ def loadData(test_only, data_path, pretrain, name):
         data_test = data_list[int(0.96 * len(data_list)):len(data_list)]
         train_loader = DataLoader(data_train, batch_size=128, shuffle=True)
         test_loader = DataLoader(data_test, batch_size=128, shuffle=False)
-        torch.save({'mean': mean, 'std': std}, '../models/' + name + '/statistics.pth')
+        torch.save({'mean': mean, 'std': std}, output_dir + name + '/statistics.pth')
 
     return train_loader, test_loader, [std, mean]
 
@@ -120,11 +122,16 @@ def main():
     EPOCH = args.EPOCH if not args.test_only else 1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Ensure output directory exists and normalize path
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir_str = str(output_dir) + '/' if not str(output_dir).endswith('/') else str(output_dir)
+    
     # Model folder is created by run.sh, but ensure it exists
-    model_dir = '../models/' + args.name
+    model_dir = output_dir_str + args.name
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
-    train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, args.name)
+    train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, args.name, output_dir_str)
     print('Making Model...')
     with torch.backends.cudnn.flags(enabled=False):
         model = Net().cuda()  # Create model FIRST
@@ -135,11 +142,11 @@ def main():
                 models = []
                 for model_path in model_paths:
                     m = Net().cuda()
-                    m.load_state_dict(torch.load('../models/' + model_path + '/model.pth'))
+                    m.load_state_dict(torch.load(output_dir_str + model_path + '/model.pth'))
                     models.append(m)
             else:
                 # Load pretrained weights into the model
-                model.load_state_dict(torch.load('../models/' + args.pretrain + '/model.pth'))
+                model.load_state_dict(torch.load(output_dir_str + args.pretrain + '/model.pth'))
 
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
@@ -197,15 +204,15 @@ def main():
             if (epoch + 1) % 10 == 0 or epoch == EPOCH - 1:
                 print('         | Test MSE: %.6f' % loss)
             if epoch > 5 and loss < min(test_MSE[0:epoch]):
-                torch.save(model.state_dict(), '../models/' + args.name + '/model.pth')
+                torch.save(model.state_dict(), output_dir_str + args.name + '/model.pth')
                 if (epoch + 1) % 10 != 0:
                     print('         | Test MSE: %.6f (best, saved)' % loss)
 
     # plot and save
-    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, args.name)
+    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, args.name, output_dir_str)
 
     # save some prediction result
-    savePrediction(data, prediction, std, mean, args.name)
+    savePrediction(data, prediction, std, mean, args.name, output_dir_str)
 
     if args.debug:
         printInstance(data, prediction, std, mean)

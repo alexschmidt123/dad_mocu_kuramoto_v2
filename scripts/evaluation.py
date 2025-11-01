@@ -202,7 +202,17 @@ if __name__ == '__main__':
                                           seed=numberOfVaildSimulations)
                 
                 elif method_name == 'DAD':
-                    method = DAD_MOCU_Method(N, K_max, deltaT, MReal, TReal, it_idx)
+                    # Try to find DAD policy in models/{config_name}/{timestamp}/dad_policy_N{N}.pth
+                    # Or use environment variable if set
+                    policy_path = None
+                    if 'DAD_POLICY_PATH' in os.environ:
+                        policy_path = Path(os.environ['DAD_POLICY_PATH'])
+                        if not policy_path.exists():
+                            print(f"[DAD] Warning: DAD_POLICY_PATH set but file not found: {policy_path}")
+                            policy_path = None
+                    
+                    method = DAD_MOCU_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
+                                            policy_model_path=policy_path)
                 
                 else:
                     print(f"Unknown method: {method_name}")

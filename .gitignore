@@ -119,12 +119,13 @@ $RECYCLE.BIN/
 # Experiment outputs folder (contains all runs)
 ../experiments/
 
-# Legacy data/models/results folders (if they exist in repo)
+# Data, models, and results folders (generated files, not in git)
 data/
 models/
 !src/models/
 results/
 Experiment/
+../experiments/
 
 # Allow example configs and small test files (optional)
 # !configs/**

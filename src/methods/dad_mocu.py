@@ -63,15 +63,38 @@ class DAD_MOCU_Method(OEDMethod):
     def _load_policy(self, policy_model_path):
         """Load trained DAD policy network."""
         if policy_model_path is None:
-            # Try default location
-            policy_model_path = PROJECT_ROOT / 'models' / f'dad_policy_N{self.N}.pth'
+            # Try to find policy in new structure: models/{config_name}/{timestamp}/dad_policy_N{N}.pth
+            # Search in all config folders for the most recent policy
+            models_root = PROJECT_ROOT / 'models'
+            found_paths = []
             
-            if not policy_model_path.exists():
-                raise FileNotFoundError(
-                    f"Policy model not found at {policy_model_path}\n"
-                    f"Please train a DAD policy first using:\n"
-                    f"  python scripts/train_dad_policy.py --data-path <data> --name dad_policy_N{self.N}"
-                )
+            if models_root.exists():
+                # Search for dad_policy_N{N}.pth in all timestamp folders
+                for config_dir in models_root.iterdir():
+                    if config_dir.is_dir():
+                        for timestamp_dir in config_dir.iterdir():
+                            if timestamp_dir.is_dir():
+                                candidate = timestamp_dir / f'dad_policy_N{self.N}.pth'
+                                if candidate.exists():
+                                    found_paths.append((candidate, timestamp_dir.stat().st_mtime))
+            
+            # Use most recently modified if found
+            if found_paths:
+                found_paths.sort(key=lambda x: x[1], reverse=True)
+                policy_model_path = found_paths[0][0]
+                print(f"[DAD-MOCU] Found policy at: {policy_model_path}")
+            else:
+                # Fall back to old flat structure
+                policy_model_path = PROJECT_ROOT / 'models' / f'dad_policy_N{self.N}.pth'
+                
+                if not policy_model_path.exists():
+                    raise FileNotFoundError(
+                        f"Policy model not found. Searched in:\n"
+                        f"  - models/*/TIMESTAMP/dad_policy_N{self.N}.pth (new structure)\n"
+                        f"  - models/dad_policy_N{self.N}.pth (old structure)\n"
+                        f"Please train a DAD policy first using:\n"
+                        f"  python scripts/train_dad_policy.py --data-path <data> --name dad_policy_N{self.N}"
+                    )
         
         print(f"[DAD-MOCU] Loading policy from: {policy_model_path}")
         
