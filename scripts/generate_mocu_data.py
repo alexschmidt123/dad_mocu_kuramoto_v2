@@ -13,7 +13,7 @@ import argparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.core.mocu_cuda import MOCU
+from src.core.mocu_backend import MOCU
 from src.core.sync_detection import mocu_comp
 import numpy as np
 import random

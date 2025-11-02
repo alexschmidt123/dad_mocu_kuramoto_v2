@@ -4,6 +4,9 @@
 
 set -e
 
+# Force PyCUDA backend for speed (no PyTorch active during data generation)
+export MOCU_BACKEND=pycuda
+
 # Load config
 CONFIG_FILE=$1
 if [ -z "$CONFIG_FILE" ]; then

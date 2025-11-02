@@ -184,7 +184,7 @@ if __name__ == '__main__':
             # This maintains the separate usage pattern:
             # - MPNN methods (iNN/NN): Use PyCUDA first, then load MPNN with sync, then alternate
             # - Sampling methods (ODE/ENTROPY/RANDOM): Use PyCUDA directly
-            from src.core.mocu_cuda import MOCU
+            from src.core.mocu_backend import MOCU
             
             # Ensure no MPNN operations are pending before PyCUDA usage
             try:

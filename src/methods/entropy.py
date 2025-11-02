@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
-from src.core.mocu_cuda import MOCU
+from src.core.mocu_backend import MOCU
 
 
 class ENTROPY_Method(OEDMethod):

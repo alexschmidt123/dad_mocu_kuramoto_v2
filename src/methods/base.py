@@ -166,7 +166,7 @@ class OEDMethod(ABC):
             experimentSequence: List of (i, j) tuples
             timeComplexity: Time per iteration [update_cnt]
         """
-        from ..core.mocu_cuda import MOCU
+        from ..core.mocu_backend import MOCU
         
         N = len(w_init)
         MOCUCurve = np.ones(update_cnt + 1) * 50.0

@@ -27,7 +27,7 @@ from src.models.predictors.mlp import MLPPredictor
 from src.models.predictors.cnn import CNNPredictor
 from src.models.predictors.mpnn_plus import MPNNPlusPredictor
 from src.models.predictors.sampling_mocu import SamplingBasedMOCU  # Separate file to avoid PyCUDA import during MPNN predictor loading
-from src.core.mocu_cuda import MOCU
+from src.core.mocu_backend import MOCU
 
 
 def load_test_data(test_data_path):

@@ -360,7 +360,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Slow but exact: Use direct CUDA MOCU computation
             # Only import PyCUDA here when actually needed (lazy import)
             # This ensures PyCUDA context is NOT initialized when using MPNN
-            from src.core.mocu_cuda import MOCU
+            from src.core.mocu_backend import MOCU
             terminal_MOCU = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
         
         # Convert MOCU to reward signal for policy gradient

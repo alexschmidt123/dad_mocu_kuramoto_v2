@@ -46,7 +46,7 @@ class SamplingBasedMOCU:
         # LAZY IMPORT: Only import MOCU when an instance is created
         # This prevents PyCUDA context initialization during module import
         # Import happens here, not at module level
-        from ...core.mocu_cuda import MOCU
+        from ...core.mocu_backend import MOCU
         self.MOCU = MOCU
         self.K_max = K_max
         self.h = h

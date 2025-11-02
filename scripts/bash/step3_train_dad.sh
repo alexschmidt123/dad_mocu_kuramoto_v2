@@ -4,6 +4,9 @@
 
 set -e
 
+# Force PyTorch backend for safety (PyTorch is active during DAD training)
+export MOCU_BACKEND=torch
+
 CONFIG_FILE=$1
 if [ -z "$CONFIG_FILE" ]; then
     echo "Usage: $0 <config_file>"
