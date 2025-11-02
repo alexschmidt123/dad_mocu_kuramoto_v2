@@ -72,8 +72,21 @@ def load_mpnn_predictor(model_name, device='cuda'):
         stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
     
     if not model_path.exists() or not stats_path.exists():
+        # Provide detailed error message with searched paths
+        searched_paths = []
+        if '_' in model_name:
+            parts = model_name.split('_')
+            if len(parts) >= 3 and len(parts[-1]) == 6 and parts[-1].isdigit() and len(parts[-2]) == 8 and parts[-2].isdigit():
+                timestamp = f"{parts[-2]}_{parts[-1]}"
+                config_name = '_'.join(parts[:-2])
+                searched_paths.append(f"  - {PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'}")
+                searched_paths.append(f"  - {PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'}")
+        searched_paths.append(f"  - {PROJECT_ROOT / 'models' / model_name / 'model.pth'}")
+        searched_paths.append(f"  - {PROJECT_ROOT / 'models' / model_name / 'statistics.pth'}")
+        
         raise FileNotFoundError(
-            f"Model or statistics not found for {model_name}. "
+            f"Model or statistics not found for {model_name}.\n"
+            f"Searched paths:\n" + "\n".join(searched_paths) + "\n"
             f"Please train MPNN predictor first:\n"
             f"  python scripts/train_mocu_predictor.py --name {model_name}"
         )

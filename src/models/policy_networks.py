@@ -208,8 +208,25 @@ class DADPolicyNetwork(nn.Module):
         # Concatenate embeddings
         history_emb = torch.cat([i_emb, j_emb], dim=-1)  # [batch_size, seq_len, hidden_dim//2]
         
-        # LSTM encoding
-        lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
+        # Ensure contiguous
+        if not history_emb.is_contiguous():
+            history_emb = history_emb.contiguous()
+        
+        # LSTM encoding with cuDNN disabled to avoid stream mismatch
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+        
+        cudnn_enabled = torch.backends.cudnn.enabled
+        cudnn_benchmark = torch.backends.cudnn.benchmark
+        try:
+            torch.backends.cudnn.enabled = False
+            torch.backends.cudnn.benchmark = False
+            lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+        finally:
+            torch.backends.cudnn.enabled = cudnn_enabled
+            torch.backends.cudnn.benchmark = cudnn_benchmark
         
         # Use final hidden state
         history_embedding = h_n[-1]  # [batch_size, hidden_dim]
