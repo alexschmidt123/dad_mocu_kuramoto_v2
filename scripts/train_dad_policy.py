@@ -523,7 +523,7 @@ def main():
                         
                         # Test model with a dummy forward pass to catch any initialization issues early
                         try:
-                            from src.models.predictors.predictors import get_edge_index, get_edge_attr_from_bounds
+                            from src.models.predictors.utils import get_edge_index, get_edge_attr_from_bounds
                             import numpy as np
                             # Create a test input
                             test_w = np.zeros(N)

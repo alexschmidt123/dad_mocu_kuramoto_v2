@@ -23,8 +23,10 @@ from torch_geometric.data import Data, Batch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.models.predictors import MLPPredictor, CNNPredictor, MPNNPlusPredictor
-from src.models.predictors.predictors import SamplingBasedMOCU  # Direct import to avoid __init__ side effects
+from src.models.predictors.mlp import MLPPredictor
+from src.models.predictors.cnn import CNNPredictor
+from src.models.predictors.mpnn_plus import MPNNPlusPredictor
+from src.models.predictors.sampling_mocu import SamplingBasedMOCU  # Separate file to avoid PyCUDA import during MPNN predictor loading
 from src.core.mocu_cuda import MOCU
 
 

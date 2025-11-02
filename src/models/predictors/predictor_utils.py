@@ -16,7 +16,8 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.models.predictors.predictors import MPNNPlusPredictor, get_edge_index, get_edge_attr_from_bounds
+from src.models.predictors.mpnn_plus import MPNNPlusPredictor
+from src.models.predictors.utils import get_edge_index, get_edge_attr_from_bounds
 
 
 def load_mpnn_predictor(model_name, device='cuda'):

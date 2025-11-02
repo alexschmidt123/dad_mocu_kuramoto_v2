@@ -18,7 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
-from src.models.predictors.predictors import MPNNPlusPredictor, get_edge_attr_from_bounds, get_edge_index, pre2R_mpnn
+from src.models.predictors.mpnn_plus import MPNNPlusPredictor
+from src.models.predictors.utils import get_edge_attr_from_bounds, get_edge_index, pre2R_mpnn
 # MOCU imported lazily in run_episode() to maintain separate usage pattern (original paper 2023)
 
 
