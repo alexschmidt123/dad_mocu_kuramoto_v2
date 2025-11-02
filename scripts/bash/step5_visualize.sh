@@ -10,7 +10,7 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
@@ -31,7 +31,7 @@ cd "${PROJECT_ROOT}/scripts"
 # Python scripts remain in scripts/ directory
 ABS_RESULT_FOLDER=$(cd "$RESULT_RUN_FOLDER" && pwd)
 
-python3 visualization.py --N $N --update_cnt 10 --result_folder "$ABS_RESULT_FOLDER"
+python3 visualize.py --N $N --update_cnt 10 --result_folder "$ABS_RESULT_FOLDER"
 
 echo "✓ Visualizations generated: ${RESULT_RUN_FOLDER}MOCU_${N}.png"
 

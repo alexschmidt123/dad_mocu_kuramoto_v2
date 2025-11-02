@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
-from src.models.predictors.all_predictors import MPNNPlusPredictor, get_edge_attr_from_bounds, get_edge_index, pre2R_mpnn
+from src.models.predictors.predictors import MPNNPlusPredictor, get_edge_attr_from_bounds, get_edge_index, pre2R_mpnn
 # MOCU imported lazily in run_episode() to maintain separate usage pattern (original paper 2023)
 
 
@@ -95,7 +95,7 @@ class iNN_Method(OEDMethod):
                 f"Please ensure the model is trained and saved at {model_path}"
             )
         
-        # Original code always used dim=32 (hardcoded in legacy_mpnn_train.py)
+        # Original code always used dim=32 (hardcoded in legacy_mpnn.py)
         # The model architecture is independent of N - it works for any graph size
         # Load checkpoint to infer hidden dimension from saved model
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)

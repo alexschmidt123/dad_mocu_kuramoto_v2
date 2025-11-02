@@ -11,12 +11,12 @@ from torch_geometric.data import Data
 from pathlib import Path
 import sys
 
-# File is at: src/models/predictors/mocu_predictor_utils.py
+# File is at: src/models/predictors/predictor_utils.py
 # Go up 4 levels to reach repo root: predictors -> models -> src -> repo_root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.models.predictors.all_predictors import MPNNPlusPredictor, get_edge_index, get_edge_attr_from_bounds
+from src.models.predictors.predictors import MPNNPlusPredictor, get_edge_index, get_edge_attr_from_bounds
 
 
 def load_mpnn_predictor(model_name, device='cuda'):
@@ -91,7 +91,7 @@ def load_mpnn_predictor(model_name, device='cuda'):
             f"Model or statistics not found for {model_name}.\n"
             f"Searched paths:\n" + "\n".join(searched_paths) + "\n"
             f"Please train MPNN predictor first:\n"
-            f"  python scripts/train_mocu_predictor.py --name {model_name}"
+            f"  python scripts/train_predictor.py --name {model_name}"
         )
     
     # Reuse loading logic from iNN/NN (same as paper 2023)

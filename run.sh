@@ -78,19 +78,19 @@ fi
 # Step 1: Generate MPNN data (runs in separate process - uses PyCUDA)
 echo ""
 echo -e "${GREEN}[Step 1/5]${NC} Generating MPNN training data..."
-bash "${PROJECT_ROOT}/workflows/step1_generate_mocu_data.sh" "$CONFIG_FILE"
+bash "${PROJECT_ROOT}/scripts/bash/step1_generate_mocu_data.sh" "$CONFIG_FILE"
 TRAIN_FILE=$(cat /tmp/mocu_train_file_${CONFIG_NAME}.txt)
 
 # Step 2: Train MPNN predictor (runs in separate process - uses PyTorch only)
 echo ""
 echo -e "${GREEN}[Step 2/5]${NC} Training MPNN predictor..."
-bash "${PROJECT_ROOT}/workflows/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
+bash "${PROJECT_ROOT}/scripts/bash/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
 
 # Step 3: Train DAD policy (runs in separate process - uses MPNN predictor only, no PyCUDA)
 if echo "$METHODS" | grep -q "DAD"; then
     echo ""
     echo -e "${GREEN}[Step 3/5]${NC} Training DAD policy..."
-    bash "${PROJECT_ROOT}/workflows/step3_train_dad.sh" "$CONFIG_FILE"
+    bash "${PROJECT_ROOT}/scripts/bash/step3_train_dad.sh" "$CONFIG_FILE"
 else
     echo ""
     echo -e "${BLUE}[Step 3/5]${NC} Skipping DAD training (not in methods list)"
@@ -99,12 +99,12 @@ fi
 # Step 4: Evaluate methods (runs in separate process - may use PyCUDA for evaluation)
 echo ""
 echo -e "${GREEN}[Step 4/5]${NC} Running evaluation..."
-bash "${PROJECT_ROOT}/workflows/step4_evaluate.sh" "$CONFIG_FILE"
+bash "${PROJECT_ROOT}/scripts/bash/step4_evaluate.sh" "$CONFIG_FILE"
 
 # Step 5: Generate visualizations (runs in separate process)
 echo ""
 echo -e "${GREEN}[Step 5/5]${NC} Generating visualizations..."
-bash "${PROJECT_ROOT}/workflows/step5_visualize.sh" "$CONFIG_FILE"
+bash "${PROJECT_ROOT}/scripts/bash/step5_visualize.sh" "$CONFIG_FILE"
 
 # Summary
 echo ""

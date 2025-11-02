@@ -10,7 +10,7 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
@@ -51,7 +51,7 @@ echo "  Results: $RESULT_RUN_FOLDER"
 
 cd "${PROJECT_ROOT}/scripts"
 # Python scripts remain in scripts/ directory
-python3 evaluation.py --methods "$METHODS"
+python3 evaluate.py --methods "$METHODS"
 
 echo "✓ Evaluation complete: $RESULT_RUN_FOLDER"
 

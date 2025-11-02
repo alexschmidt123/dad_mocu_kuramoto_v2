@@ -263,7 +263,7 @@ def main():
     total_samples = len(pyg_data_list)
     
     # Match original paper implementation:
-    # Training script (train_mocu_predictor.py) expects a single file and splits at 96/4
+    # Training script (train_predictor.py) expects a single file and splits at 96/4
     # So we output a single combined file, not separate train/test files
     # The training script will handle the 96/4 split internally
     

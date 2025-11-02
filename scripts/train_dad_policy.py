@@ -321,7 +321,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
             
-            from src.models.predictors.mocu_predictor_utils import predict_mocu
+            from src.models.predictors.predictor_utils import predict_mocu
             terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
             
             # Ensure MPNN prediction is complete before continuing
@@ -470,7 +470,7 @@ def main():
                         torch.cuda.synchronize()
                         torch.cuda.empty_cache()
                     
-                    from src.models.predictors.mocu_predictor_utils import load_mpnn_predictor
+                    from src.models.predictors.predictor_utils import load_mpnn_predictor
                     # Get model name from environment variable (set by run.sh) or config, or use default
                     import os
                     model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name') or f'cons{N}'
@@ -487,7 +487,7 @@ def main():
                         
                         # Test model with a dummy forward pass to catch any initialization issues early
                         try:
-                            from src.models.predictors.all_predictors import get_edge_index, get_edge_attr_from_bounds
+                            from src.models.predictors.predictors import get_edge_index, get_edge_attr_from_bounds
                             import numpy as np
                             # Create a test input
                             test_w = np.zeros(N)

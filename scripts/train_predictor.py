@@ -139,7 +139,7 @@ def main():
         model_path_prefix = output_dir_str + args.name
         load_data_output_dir = output_dir_str
         load_data_name = args.name
-        print(f"[train_mocu_predictor] Using name '{args.name}': saving to {model_path_prefix}/")
+        print(f"[train_predictor] Using name '{args.name}': saving to {model_path_prefix}/")
     else:
         # No name provided or empty - use output_dir directly (run.sh passes exact timestamp folder)
         model_dir = output_dir_str.rstrip('/')
@@ -148,8 +148,8 @@ def main():
         model_path_prefix_path = Path(model_path_prefix)
         load_data_output_dir = str(model_path_prefix_path.parent) + '/'
         load_data_name = model_path_prefix_path.name
-        print(f"[train_mocu_predictor] No name provided - using output_dir as model folder: {model_path_prefix}")
-        print(f"[train_mocu_predictor] Statistics will be saved to: {load_data_output_dir}{load_data_name}/statistics.pth")
+        print(f"[train_predictor] No name provided - using output_dir as model folder: {model_path_prefix}")
+        print(f"[train_predictor] Statistics will be saved to: {load_data_output_dir}{load_data_name}/statistics.pth")
     
     train_loader, test_loader, [std, mean] = loadData(args.test_only, args.data_path, args.pretrain, load_data_name, load_data_output_dir)
     print('Making Model...')

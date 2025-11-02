@@ -10,7 +10,7 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
@@ -41,7 +41,7 @@ cd "${PROJECT_ROOT}/scripts"
 ABS_TRAIN_FILE=$(cd "$(dirname "$TRAIN_FILE")" && pwd)/$(basename "$TRAIN_FILE")
 ABS_MODEL_RUN_FOLDER=$(cd "$MODEL_RUN_FOLDER" && pwd)
 
-python3 train_mocu_predictor.py \
+python3 train_predictor.py \
     --name "__USE_OUTPUT_DIR__" \
     --data_path "$ABS_TRAIN_FILE" \
     --EPOCH $EPOCHS \

@@ -67,11 +67,18 @@ dad_mocu_kuramoto_v2/
 ├── scripts/                      # Execution scripts
 │   ├── generate_mocu_data.py    # Generate MOCU predictor training data
 │   ├── generate_dad_data.py     # Generate DAD policy training data
-│   ├── train_mocu_predictor.py  # Train MPNN+ predictor (for iNN/NN)
+│   ├── train_predictor.py       # Train MPNN+ predictor (for iNN/NN)
 │   ├── train_dad_policy.py      # Train DAD policy network
-│   ├── evaluate_predictors.py   # Compare MOCU predictors (MSE, speed) 📊
-│   ├── evaluation.py            # Run OED experiments (all methods) ⭐
-│   └── visualization.py         # Generate plots
+│   ├── compare_predictors.py    # Compare MOCU predictors (MSE, speed) 📊
+│   ├── evaluate.py              # Run OED experiments (all methods) ⭐
+│   └── visualize.py             # Generate plots
+│
+├── scripts/bash/               # Shell scripts (workflow orchestration)
+│   ├── step1_generate_mocu_data.sh
+│   ├── step2_train_mpnn.sh
+│   ├── step3_train_dad.sh
+│   ├── step4_evaluate.sh
+│   └── step5_visualize.sh
 │
 ├── src/
 │   ├── methods/                    # OED selection methods
@@ -84,9 +91,10 @@ dad_mocu_kuramoto_v2/
 │   │
 │   ├── models/                     # Neural network models
 │   │   ├── predictors/            # MOCU prediction models
-│   │   │   ├── all_predictors.py  # Unified: MLP, CNN, MPNN+, Sampling, Ensemble
+│   │   │   ├── predictors.py       # Unified: MLP, CNN, MPNN+, Sampling, Ensemble
 │   │   │   ├── legacy_baselines.py # Original CNN/MLP (2023 paper)
-│   │   │   └── legacy_mpnn_train.py # Original MPNN training (2023 paper)
+│   │   │   ├── legacy_mpnn.py     # Original MPNN training (2023 paper)
+│   │   │   └── predictor_utils.py  # Utility functions for predictor loading
 │   │   └── policy_networks.py     # DAD policy network
 │   │
 │   ├── core/                       # Core computation
@@ -134,7 +142,7 @@ conda activate mocu
 python scripts/generate_mocu_data.py --N 5 --samples_per_type 150 --K_max 1024 --train_size 100
 
 # Step 2: Train for 10 epochs
-python scripts/train_mocu_predictor.py --data_path ./data/ --name fast_test --epochs 10
+python scripts/train_predictor.py --data_path ./data/ --name fast_test --epochs 10
 
 # Step 3: Test with trained model
 python quick_test.py
@@ -166,7 +174,7 @@ bash run.sh configs/N9_config.yaml
 
 ### Level 1: MOCU Prediction
 
-**Location**: `src/models/predictors/all_predictors.py`
+**Location**: `src/models/predictors/predictors.py`
 
 Predict MOCU values from coupling bounds:
 - **MLP**, **CNN** - Baseline neural networks
@@ -176,7 +184,7 @@ Predict MOCU values from coupling bounds:
 
 **Evaluate predictors**:
 ```bash
-python scripts/evaluate_predictors.py --test_data ./data/test_data.pt
+python scripts/compare_predictors.py --test_data ./data/test_data.pt
 ```
 
 This compares all predictors on:
@@ -230,7 +238,7 @@ MOCUCurve, experiments, times = method.run_episode(
 python scripts/generate_mocu_data.py --N 5 --samples_per_type 37500
 
 # Train MPNN+ predictor
-python scripts/train_mocu_predictor.py --data_path ./data/ --name cons5
+python scripts/train_predictor.py --data_path ./data/ --name cons5
 ```
 
 **Note**: Sampling-based methods (ODE, iODE) don't need training - they compute MOCU directly.
@@ -249,7 +257,7 @@ python scripts/train_dad_policy.py --data_path ./data/dad_training_data/ --name 
 
 ```bash
 export MOCU_MODEL_NAME=cons5
-python scripts/evaluation.py
+python scripts/evaluate.py
 ```
 
 This evaluates ALL methods: iNN, NN, ODE, ENTROPY, RANDOM, DAD
@@ -265,12 +273,12 @@ Compare different prediction models:
 python scripts/generate_mocu_data.py --N 5 --samples_per_type 5000
 
 # Train different predictors
-python scripts/train_mocu_predictor.py --model mlp --name mlp_predictor
-python scripts/train_mocu_predictor.py --model cnn --name cnn_predictor
-python scripts/train_mocu_predictor.py --model mpnn --name cons5
+python scripts/train_predictor.py --model mlp --name mlp_predictor
+python scripts/train_predictor.py --model cnn --name cnn_predictor
+python scripts/train_predictor.py --model mpnn --name cons5
 
 # Compare predictor performance
-python scripts/evaluate_predictors.py --test_data ./data/test_data.pt
+python scripts/compare_predictors.py --test_data ./data/test_data.pt
 ```
 
 **Output**: MSE, MAE, inference speed, model size for each predictor
@@ -284,10 +292,10 @@ Compare different experimental design strategies:
 export MOCU_MODEL_NAME=cons5
 
 # Run OED evaluation
-python scripts/evaluation.py
+python scripts/evaluate.py
 
 # Visualize results
-python scripts/visualization.py
+python scripts/visualize.py
 ```
 
 **Output**: MOCU curves, terminal MOCU, time complexity for each method
@@ -304,7 +312,7 @@ python scripts/generate_dad_data.py --N 5 --num_episodes 1000
 python scripts/train_dad_policy.py --data_path ./data/dad_training_data/
 
 # Evaluate with DAD included
-python scripts/evaluation.py  # DAD is already in method list
+python scripts/evaluate.py  # DAD is already in method list
 ```
 
 **Output**: DAD-MOCU vs. all baselines
@@ -336,14 +344,15 @@ See LICENSE file for details.
 
 **Renamed for clarity**:
 - `data_generation.py` → `generate_mocu_data.py`
-- `training.py` → `train_mocu_predictor.py`
-- `evaluation_unified.py` → `evaluation.py`
+- `training.py` → `train_predictor.py`
+- `evaluation_unified.py` → `evaluate.py`
 
 **Organized models/** directory:
 - Created `models/predictors/` subdirectory
-- `all_predictors.py` - Unified implementations (use this)
+- `predictors.py` - Unified implementations (use this)
 - `legacy_baselines.py` - Original CNN/MLP (backward compatibility)
-- `legacy_mpnn_train.py` - Original MPNN training (backward compatibility)
+- `legacy_mpnn.py` - Original MPNN training (backward compatibility)
+- `predictor_utils.py` - Utility functions for loading/using predictors
 
 ### Clean Architecture
 
@@ -359,19 +368,19 @@ See LICENSE file for details.
 
 ✅ **Predictor Comparison** (Table 1 in paper):
 ```bash
-python scripts/evaluate_predictors.py
+python scripts/compare_predictors.py
 ```
 Compares MLP, CNN, MPNN+ on MSE, MAE, inference speed, model size
 
 ✅ **OED Method Comparison** (Table 2 in paper):
 ```bash
-python scripts/evaluation.py
+python scripts/evaluate.py
 ```
 Compares iNN, NN, ODE, ENTROPY, RANDOM, DAD on terminal MOCU, time complexity
 
 ✅ **Visualization**:
 ```bash
-python scripts/visualization.py
+python scripts/visualize.py
 ```
 Generates MOCU curves, time complexity plots, performance tables
 

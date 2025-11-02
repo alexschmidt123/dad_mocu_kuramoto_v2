@@ -12,7 +12,7 @@ if [ -z "$CONFIG_FILE" ]; then
 fi
 
 # Parse config
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)

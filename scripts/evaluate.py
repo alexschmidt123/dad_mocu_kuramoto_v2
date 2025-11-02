@@ -78,13 +78,13 @@ if __name__ == '__main__':
     else:
         # Default methods if not specified
         method_names = [
-            'iNN',      # Iterative MPNN (needs: train_mocu_predictor.py)
-            'NN',       # Static MPNN (needs: train_mocu_predictor.py)
+            'iNN',      # Iterative MPNN (needs: train_predictor.py)
+            'NN',       # Static MPNN (needs: train_predictor.py)
             'ODE',      # Static sampling-based (no training needed, but VERY slow)
             # 'iODE',   # Iterative sampling-based (no training, EXTREMELY slow)
             'ENTROPY',  # Greedy uncertainty (no training needed)
             'RANDOM',   # Random baseline (no training needed)
-            # 'DAD',    # Deep Adaptive Design (needs: train_dad_policy.py) ⭐
+            # 'DAD',    # Deep Adaptive Design (needs: train_dad_policy.py)
         ]
         print(f"Using default methods: {method_names}")
     

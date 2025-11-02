@@ -10,7 +10,7 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
