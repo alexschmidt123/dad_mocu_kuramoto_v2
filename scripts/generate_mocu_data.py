@@ -17,8 +17,7 @@ sys.path.append(str(PROJECT_ROOT))
 from src.core.mocu import MOCU
 import numpy as np
 import random
-import torch
-# Lazy import torch - don't import at module level (torch imports are inside functions)
+import torch  # Need torch for device detection at module level
 
 def generate_coupling_type1(w, N):
     """
@@ -139,8 +138,6 @@ def generate_single_sample(N, K_max, h, M, T, coupling_type='type1', device='cud
 
 def getEdgeAtt(attr1, attr2, n):
     """Convert matrix attributes to edge attributes for PyTorch Geometric."""
-    # Lazy import torch
-    import torch
     edge_attr = torch.zeros([2, n * (n - 1)])
     k = 0
     for i in range(n):
@@ -154,8 +151,6 @@ def getEdgeAtt(attr1, attr2, n):
 
 def convert_to_pytorch_geometric(data_list):
     """Convert JSON data to PyTorch Geometric Data objects."""
-    # Lazy import torch
-    import torch
     from torch_geometric.data import Data
     
     pyg_data_list = []
@@ -192,6 +187,10 @@ def convert_to_pytorch_geometric(data_list):
 
 
 def main():
+    # Import torch at function level to ensure it's available
+    # (module-level import should work, but this avoids any scoping issues)
+    import torch
+    
     parser = argparse.ArgumentParser(description='Generate training dataset for MOCU prediction')
     parser.add_argument('--N', type=int, default=5, help='Number of oscillators')
     parser.add_argument('--samples_per_type', type=int, default=37500, 
@@ -301,8 +300,7 @@ def main():
     # Use naming convention: {total_samples}_{N}o_train.pth (matches original pattern)
     output_file = output_dir / f'{total_samples}_{N}o_train.pth'
     
-    # Lazy import torch for saving
-    import torch
+    # Save PyTorch Geometric data
     torch.save(pyg_data_list, output_file)
     
     print("\n" + "=" * 80)
