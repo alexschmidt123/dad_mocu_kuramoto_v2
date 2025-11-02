@@ -11,7 +11,9 @@ from torch_geometric.data import Data
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# File is at: src/models/predictors/mocu_predictor_utils.py
+# Go up 4 levels to reach repo root: predictors -> models -> src -> repo_root
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.models.predictors.all_predictors import MPNNPlusPredictor, get_edge_index, get_edge_attr_from_bounds
