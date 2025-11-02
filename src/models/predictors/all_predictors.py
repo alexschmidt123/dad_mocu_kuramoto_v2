@@ -180,13 +180,13 @@ class MPNNPlusPredictor(nn.Module):
         out = F.relu(self.lin0(data.x))  # [num_nodes, dim]
         h = out.unsqueeze(0)  # [1, num_nodes, dim] for GRU
         
-        # Message passing layers
+        # Message passing layers (original paper 2023 code - unchanged)
         for _ in range(self.num_mp):
             m = F.relu(self.conv(out, data.edge_index, data.edge_attr))
             out, h = self.gru(m.unsqueeze(0), h)
             out = out.squeeze(0)
         
-        # Graph-level pooling
+        # Graph-level pooling (original paper 2023 code - unchanged)
         out = self.set2set(out, data.batch)  # [batch_size, 2*dim]
         
         # Final prediction

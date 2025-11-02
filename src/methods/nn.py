@@ -19,7 +19,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
 from src.models.predictors.all_predictors import MPNNPlusPredictor, get_edge_attr_from_bounds, get_edge_index, pre2R_mpnn
-from src.core.mocu_cuda import MOCU
+# MOCU imported lazily in run_episode() to maintain separate usage pattern (original paper 2023)
 
 
 class NN_Method(OEDMethod):

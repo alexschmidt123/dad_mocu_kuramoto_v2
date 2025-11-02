@@ -3,6 +3,16 @@ Generate trajectory data for training DAD (Deep Adaptive Design) policy network.
 
 This script generates sequential decision trajectories for REINFORCE training.
 Uses random expert (fast) - REINFORCE doesn't need expert labels, only a_true.
+
+IMPORTANT: This script does NOT compute MOCU values (no PyCUDA needed).
+- MOCU is computed DURING training (using MPNN predictor) as the reward signal
+- This script only generates trajectory structures: (w, a_true, states, actions)
+- It uses mocu_comp() (CPU-based sync detection) to check system stability, NOT MOCU computation
+
+Why no PyCUDA?
+- MPNN data generation: Needs MOCU as ground truth labels → Uses PyCUDA
+- DAD data generation: Only creates trajectory structures → No MOCU computation needed
+- DAD training: Computes MOCU during rollouts using MPNN predictor → No PyCUDA needed
 """
 
 import sys

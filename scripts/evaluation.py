@@ -30,7 +30,7 @@ from src.methods import (
     DAD_MOCU_Method,
 )
 from src.core.sync_detection import determineSyncN, determineSyncTwo
-from src.core.mocu_cuda import MOCU
+from src.core.mocu_cuda import MOCU  # This imports PyCUDA (via pycuda.autoinit in mocu_cuda.py)
 
 
 if __name__ == '__main__':

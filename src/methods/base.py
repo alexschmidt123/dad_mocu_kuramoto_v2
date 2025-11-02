@@ -174,7 +174,8 @@ class OEDMethod(ABC):
         timeComplexity = np.zeros(update_cnt)
         history = []
         
-        # Compute initial MOCU
+        # Compute initial MOCU using PyCUDA (original paper 2023 pattern)
+        # This happens BEFORE any MPNN operations (separate usage pattern)
         it_temp_val = np.zeros(self.it_idx)
         for l in range(self.it_idx):
             it_temp_val[l] = MOCU(self.K_max, w_init, N, self.deltaT, 
@@ -182,18 +183,45 @@ class OEDMethod(ABC):
                                  a_lower_init, a_upper_init, 0)
         MOCUCurve[0] = np.mean(it_temp_val)
         
+        # Ensure all PyCUDA operations are complete before MPNN usage
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()  # Wait for PyCUDA kernels to finish
+        except:
+            pass
+        
         a_lower_current = a_lower_init.copy()
         a_upper_current = a_upper_init.copy()
         
         # Sequential experimental design
+        # Follows original paper 2023 pattern: MPNN and PyCUDA used separately, not simultaneously
         for iteration in range(update_cnt):
             iterationStartTime = time.time()
             
+            # Ensure all PyCUDA operations are complete before MPNN usage (separate usage pattern)
+            # This prevents any concurrent GPU access between PyCUDA kernels and PyTorch/cuDNN
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()  # Wait for any pending CUDA operations
+            except:
+                pass
+            
             # Select experiment using the method's specific logic
+            # For iNN/NN: This uses MPNN predictor (separate from PyCUDA)
             selected_i, selected_j = self.select_experiment(
                 w_init, a_lower_current, a_upper_current, 
                 criticalK_init, isSynchronized_init, history
             )
+            
+            # Ensure MPNN operations (PyTorch/cuDNN) are complete before PyCUDA usage
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()  # Wait for MPNN forward passes to complete
+            except:
+                pass
             
             iterationTime = time.time() - iterationStartTime
             timeComplexity[iteration] = iterationTime
@@ -217,7 +245,8 @@ class OEDMethod(ABC):
             
             history.append(((selected_i, selected_j), observation_sync))
             
-            # Re-compute MOCU for the updated bounds
+            # Re-compute MOCU for the updated bounds using PyCUDA
+            # This happens AFTER MPNN operations are complete (separate usage pattern)
             it_temp_val = np.zeros(self.it_idx)
             for l in range(self.it_idx):
                 it_temp_val[l] = MOCU(self.K_max, w_init, N, self.deltaT,

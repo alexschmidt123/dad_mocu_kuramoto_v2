@@ -220,7 +220,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         K_max: Monte Carlo samples for MOCU computation
         use_baseline: If True, subtract running average as baseline (reduces variance)
     """
-    from src.core.mocu_cuda import MOCU
+    # Lazy import: Only import PyCUDA when actually needed (when use_predicted_mocu=False)
+    # This avoids initializing PyCUDA context when using MPNN predictor, preventing stream conflicts
+    # This matches the original paper's pattern: separate usage of MPNN and PyCUDA
     from scripts.generate_dad_data import perform_experiment, update_bounds
     
     model.train()
@@ -311,10 +313,15 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         # Use fast MPNN prediction if available, otherwise use slow CUDA computation
         if use_predicted_mocu and mocu_model is not None:
             # Fast: Use MPNN predictor (reuses same logic as iNN/NN from paper 2023)
+            # IMPORTANT: When using MPNN, we don't import PyCUDA at all
+            # This keeps them separate, just like the original paper
             from src.models.predictors.mocu_predictor_utils import predict_mocu
             terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
         else:
             # Slow but exact: Use direct CUDA MOCU computation
+            # Only import PyCUDA here when actually needed (lazy import)
+            # This ensures PyCUDA context is NOT initialized when using MPNN
+            from src.core.mocu_cuda import MOCU
             terminal_MOCU = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
         
         # Convert MOCU to reward signal for policy gradient
