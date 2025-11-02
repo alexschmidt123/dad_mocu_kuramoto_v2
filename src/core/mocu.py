@@ -53,6 +53,7 @@ def _mocu_comp_torch(w: Union[np.ndarray, torch.Tensor], h: float, N: int, M: in
     min_temp = torch.tensor(100.0, device=w.device, dtype=torch.float32)
     
     # Optimized RK4 with pre-computed sin operations
+    # Note: This loop processes sequentially, but tensor operations are GPU-accelerated
     for k in range(M):
         # Compute forces F using vectorized operations
         # F[i] = w[i] + sum_j(a[i,j] * sin(theta[j] - theta[i]))
@@ -238,38 +239,37 @@ def MOCU(K_max: int, w: Union[np.ndarray, torch.Tensor], N: int, h: float, M: in
         rng = np.random.RandomState(int(seed))
         rand_data = rng.uniform(size=int((N - 1) * N / 2.0 * K_max))
     
-    # Process samples - optimized batch processing
-    a_save = []
-    
-    # Use larger batch size for better GPU utilization
-    batch_size = min(256, K_max) if device == 'cuda' and torch.cuda.is_available() else min(100, K_max)
+    # Process samples sequentially (each requires binary search which has dependencies)
+    # NOTE: This is the main bottleneck - each sample requires ~20-30 binary search iterations
+    # Each iteration does RK4 integration (M steps), so total: K_max * 20-30 * M operations
+    # GPU accelerates the RK4 tensor operations, but we can't parallelize binary search across samples
     
     # Pre-allocate result array for better memory management
     a_save = np.zeros(K_max, dtype=np.float64)
     
-    for batch_start in range(0, K_max, batch_size):
-        batch_end = min(batch_start + batch_size, K_max)
-        batch_K = batch_end - batch_start
+    # Process samples one by one (binary search prevents true parallelization)
+    # The GPU is used for RK4 integration within each sample, but samples are sequential
+    for sample_idx in range(K_max):
+        # Generate random coupling matrix for this sample
+        cnt0 = sample_idx * (N - 1) * N // 2
+        a_new = np.zeros((N, N), dtype=np.float64)
         
-        for k_idx in range(batch_K):
-            sample_idx = batch_start + k_idx
-            
-            # Generate random coupling matrix for this sample
-            cnt0 = sample_idx * (N - 1) * N // 2
-            a_new = np.zeros((N, N), dtype=np.float64)
-            
-            cnt1 = 0
-            for i in range(N):
-                for j in range(i + 1, N):
-                    rand_ind = cnt0 + cnt1
-                    a_val = vec_a_lower[j * N + i] + (vec_a_upper[j * N + i] - vec_a_lower[j * N + i]) * rand_data[rand_ind]
-                    a_new[j, i] = a_val
-                    a_new[i, j] = a_val
-                    cnt1 += 1
-            
-            # Find critical coupling for this sample
-            critical_c = _find_critical_coupling_torch(w, h, N, M, a_new, device=device)
-            a_save[sample_idx] = critical_c
+        cnt1 = 0
+        for i in range(N):
+            for j in range(i + 1, N):
+                rand_ind = cnt0 + cnt1
+                a_val = vec_a_lower[j * N + i] + (vec_a_upper[j * N + i] - vec_a_lower[j * N + i]) * rand_data[rand_ind]
+                a_new[j, i] = a_val
+                a_new[i, j] = a_val
+                cnt1 += 1
+        
+        # Find critical coupling for this sample (this uses GPU for RK4)
+        critical_c = _find_critical_coupling_torch(w, h, N, M, a_new, device=device)
+        a_save[sample_idx] = critical_c
+        
+        # Optional: synchronize every 100 samples to avoid memory buildup
+        if device == 'cuda' and torch.cuda.is_available() and (sample_idx + 1) % 100 == 0:
+            torch.cuda.synchronize()
     
     if np.min(a_save) == 0:
         print("Non sync case exists")

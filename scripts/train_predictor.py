@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from tqdm import tqdm
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -175,13 +176,18 @@ def main():
         test_MSE = np.zeros(EPOCH)
         train_MSE = np.zeros(EPOCH)
         train_rank = np.zeros(EPOCH)
-        # start training
-        for epoch in range(EPOCH):
+        
+        # start training with progress bars
+        epoch_pbar = tqdm(range(EPOCH), desc="Training", unit="epoch", ncols=100)
+        for epoch in epoch_pbar:
             if not args.test_only:
                 train_MSE_step = []
                 train_rank_step = []
                 model.train()
-                for data in train_loader:  # for each training step
+                
+                batch_pbar = tqdm(train_loader, desc=f"  Epoch {epoch+1}/{EPOCH}", 
+                                 leave=False, unit="batch", ncols=100)
+                for data in batch_pbar:  # for each training step
                     # train
                     data_ = copy.deepcopy(data)
                     data_.edge_attr.requires_grad = True
@@ -196,18 +202,28 @@ def main():
                     optimizer.step()  # apply gradients
                     train_MSE_step.append(mseLoss.item() * std * std)
                     train_rank_step.append(rankLoss.item() * std * std)
+                    
+                    # Update batch progress bar
+                    batch_pbar.set_postfix({
+                        'MSE': f'{mseLoss.item() * std * std:.4f}',
+                        'Rank': f'{rankLoss.item() * std * std:.4f}'
+                    })
 
                 train_MSE[epoch] = (sum(train_MSE_step) / len(train_MSE_step))
                 train_rank[epoch] = (sum(train_rank_step) / len(train_rank_step))
-                # Print progress every 10 epochs or at the end
-                if (epoch + 1) % 10 == 0 or epoch == EPOCH - 1:
-                    print('Epoch %d/%d | LR: %.6f | Train MSE: %.6f | Train Rank: %.6f' % 
-                          (epoch + 1, EPOCH, lr, train_MSE[epoch], train_rank[epoch]))
+                
+                # Update epoch progress bar
+                epoch_pbar.set_postfix({
+                    'Train MSE': f'{train_MSE[epoch]:.6f}',
+                    'Train Rank': f'{train_rank[epoch]:.6f}',
+                    'LR': f'{lr:.6f}'
+                })
 
             # test
             model.eval()
             error = 0
-            for data in test_loader:
+            test_pbar = tqdm(test_loader, desc="  Testing", leave=False, unit="batch", ncols=100)
+            for data in test_pbar:
                 data = data.to(device)
                 if args.multiple_model:
                     predictions = 0

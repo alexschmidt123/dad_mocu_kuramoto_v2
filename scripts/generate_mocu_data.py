@@ -8,15 +8,16 @@ from pathlib import Path
 import time
 import json
 import argparse
+from tqdm import tqdm
 
 # Get absolute path to project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.core.mocu import MOCU
-from src.core.sync_detection import mocu_comp
 import numpy as np
 import random
+import torch
 # Lazy import torch - don't import at module level (torch imports are inside functions)
 
 def generate_coupling_type1(w, N):
@@ -74,8 +75,11 @@ def generate_coupling_type2(w, N):
     return a_lower_bound, a_upper_bound
 
 
-def generate_single_sample(N, K_max, h, M, T, coupling_type='type1'):
-    """Generate a single training sample with MOCU computation."""
+def generate_single_sample(N, K_max, h, M, T, coupling_type='type1', device='cuda'):
+    """Generate a single training sample with MOCU computation.
+    
+    Always computes MOCU twice and averages for stability.
+    """
     
     # Generate random natural frequencies
     w = np.zeros(N)
@@ -88,23 +92,39 @@ def generate_single_sample(N, K_max, h, M, T, coupling_type='type1'):
     else:
         a_lower_bound, a_upper_bound = generate_coupling_type2(w, N)
     
-    # Check if system is already synchronized
+    # Check if system is already synchronized using GPU version (faster)
     a = np.zeros((N, N))
     for i in range(N):
         for j in range(i + 1, N):
             a[i, j] = a_lower_bound[i, j] + 0.5 * (a_upper_bound[i, j] - a_lower_bound[i, j])
             a[j, i] = a[i, j]
     
-    init_sync_check = mocu_comp(w, h, N, M, a)
+    # Use GPU sync detection if available (much faster)
+    # Import sync detection - prefer GPU version if available
+    if device == 'cuda' and torch.cuda.is_available():
+        # Use internal GPU version for speed
+        from src.core.mocu import _mocu_comp_torch
+        init_sync_check = _mocu_comp_torch(w, h, N, M, a, device=device)
+    else:
+        from src.core.sync_detection import mocu_comp
+        init_sync_check = mocu_comp(w, h, N, M, a)
+    
     if init_sync_check == 1:
         return None  # Skip synchronized systems
     
-    # Compute MOCU values (compute twice and average for stability)
-    MOCU_val1 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0)
-    MOCU_val2 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0)
+    # Always compute MOCU twice and average for stability (reduces Monte Carlo variance)
+    # NOTE: MOCU computation is sequential per sample (binary search dependencies)
+    # GPU accelerates RK4 integration within each binary search iteration
+    # For K_max=1024: ~1024 samples * ~25 binary searches * 640 RK4 steps = significant computation
+    MOCU_val1 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0, device=device)
+    
+    # Sync GPU before second computation
+    if device == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    
+    MOCU_val2 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0, device=device)
     mean_MOCU = (MOCU_val1 + MOCU_val2) / 2
     
-    # Create data dictionary
     data_dic = {
         'w': w.tolist(),
         'a_lower': a_lower_bound.tolist(),
@@ -180,7 +200,8 @@ def main():
     parser.add_argument('--train_size', type=int, default=70000, 
                         help='Expected training set size (for reference only, actual split done by training script)')
     parser.add_argument('--output_dir', type=str, default='../data/', help='Output directory (with trailing slash)')
-    parser.add_argument('--save_json', action='store_true', help='Save intermediate JSON files')
+    parser.add_argument('--save_json', action='store_true', 
+                        help='Save intermediate JSON files with MOCU1 and MOCU2 values')
     args = parser.parse_args()
     
     # Configuration
@@ -190,6 +211,9 @@ def main():
     h = 1.0 / 160.0
     M = int(T / h)
     samples_per_type = args.samples_per_type
+    
+    # Determine device
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -203,46 +227,41 @@ def main():
     print(f"  - Samples per type: {samples_per_type}")
     print(f"  - Expected total: {samples_per_type * 2} (some may be filtered)")
     print(f"  - Monte Carlo samples (K_max): {K_max}")
+    print(f"  - Device: {device.upper()}")
+    if device == 'cuda' and torch.cuda.is_available():
+        print(f"  - GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  - GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    print(f"  - Compute MOCU twice: Always enabled (for stability - reduces Monte Carlo variance)")
     print(f"  - Note: Training script will split at 96%%/4%% automatically")
     print("=" * 80)
     
     # Generate Type 1 data
     print("\n[1/4] Generating Type 1 data (per-edge coupling distribution)...")
-    start_time = time.time()
     data_type1 = []
     
-    for i in range(samples_per_type):
-        sample = generate_single_sample(N, K_max, h, M, T, coupling_type='type1')
-        if sample is not None:
-            data_type1.append(sample)
-        
-        if (i + 1) % 100 == 0:
-            elapsed = time.time() - start_time
-            avg_time = elapsed / (i + 1)
-            eta = avg_time * (samples_per_type - i - 1)
-            print(f"  Progress: {i+1}/{samples_per_type} samples | "
-                  f"Avg: {avg_time:.2f}s/sample | ETA: {eta/60:.1f} min")
+    with tqdm(total=samples_per_type, desc="  Type 1", unit="sample", ncols=100) as pbar:
+        for i in range(samples_per_type):
+            sample = generate_single_sample(N, K_max, h, M, T, coupling_type='type1', 
+                                           device=device)
+            if sample is not None:
+                data_type1.append(sample)
+            pbar.update(1)
     
-    print(f"  Completed Type 1: {len(data_type1)} valid samples")
+    print(f"  ✓ Completed Type 1: {len(data_type1)} valid samples ({samples_per_type - len(data_type1)} skipped)")
     
     # Generate Type 2 data
     print("\n[2/4] Generating Type 2 data (per-oscillator coupling distribution)...")
-    start_time = time.time()
     data_type2 = []
     
-    for i in range(samples_per_type):
-        sample = generate_single_sample(N, K_max, h, M, T, coupling_type='type2')
-        if sample is not None:
-            data_type2.append(sample)
-        
-        if (i + 1) % 100 == 0:
-            elapsed = time.time() - start_time
-            avg_time = elapsed / (i + 1)
-            eta = avg_time * (samples_per_type - i - 1)
-            print(f"  Progress: {i+1}/{samples_per_type} samples | "
-                  f"Avg: {avg_time:.2f}s/sample | ETA: {eta/60:.1f} min")
+    with tqdm(total=samples_per_type, desc="  Type 2", unit="sample", ncols=100) as pbar:
+        for i in range(samples_per_type):
+            sample = generate_single_sample(N, K_max, h, M, T, coupling_type='type2', 
+                                           device=device)
+            if sample is not None:
+                data_type2.append(sample)
+            pbar.update(1)
     
-    print(f"  Completed Type 2: {len(data_type2)} valid samples")
+    print(f"  ✓ Completed Type 2: {len(data_type2)} valid samples ({samples_per_type - len(data_type2)} skipped)")
     
     # Save JSON files if requested
     if args.save_json:
@@ -263,7 +282,13 @@ def main():
     print(f"  Total valid samples: {len(all_data)}")
     print(f"  Converting to PyTorch Geometric Data objects...")
     
-    pyg_data_list = convert_to_pytorch_geometric(all_data)
+    with tqdm(total=len(all_data), desc="  Converting", unit="sample", ncols=100) as pbar:
+        pyg_data_list = []
+        for data_item in all_data:
+            # Convert one at a time with progress
+            pyg_data = convert_to_pytorch_geometric([data_item])[0]
+            pyg_data_list.append(pyg_data)
+            pbar.update(1)
     
     total_samples = len(pyg_data_list)
     

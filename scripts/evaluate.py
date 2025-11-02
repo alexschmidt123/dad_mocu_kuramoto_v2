@@ -15,6 +15,7 @@ import os
 import argparse
 import numpy as np
 from pathlib import Path
+from tqdm import tqdm
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -124,10 +125,11 @@ if __name__ == '__main__':
     save_MOCU_matrix = np.zeros([update_cnt + 1, len(method_names), numberOfSimulationsPerMethod])
     
     # ========== Main simulation loop ==========
+    # Progress bar for simulations
+    sim_pbar = tqdm(total=numberOfSimulationsPerMethod, desc="Simulations", unit="sim", ncols=100)
+    
     while numberOfVaildSimulations < numberOfSimulationsPerMethod:
-        print(f"\n{'='*80}")
-        print(f"Starting simulation {numberOfSimulations + 1}")
-        print(f"{'='*80}")
+        sim_pbar.set_description(f"Simulation {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}")
         
         # Generate random coupling strengths
         randomState = np.random.RandomState(int(numberOfSimulations))
@@ -168,10 +170,10 @@ if __name__ == '__main__':
         np.savetxt(coupling_file, a, fmt='%.64e')
         
         # ========== Evaluate each method ==========
-        for method_idx, method_name in enumerate(method_names):
-            print(f"\n{'-'*80}")
-            print(f"Method: {method_name} (Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod})")
-            print(f"{'-'*80}")
+        method_pbar = tqdm(method_names, desc=f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}", 
+                          leave=False, unit="method", ncols=100)
+        for method_idx, method_name in enumerate(method_pbar):
+            method_pbar.set_description(f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod} - {method_name}")
             
             # Compute initial MOCU (lazy import to maintain separation for MPNN methods)
             # IMPORTANT: For MPNN methods (iNN/NN), we compute initial MOCU BEFORE loading MPNN
@@ -190,9 +192,11 @@ if __name__ == '__main__':
             except:
                 pass
             
-            for l in range(it_idx):
-                it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, 
-                                     aInitialLower.copy(), aInitialUpper.copy(), 0)
+            with tqdm(total=it_idx, desc="  Computing initial MOCU", leave=False, unit="iter", ncols=100) as pbar:
+                for l in range(it_idx):
+                    it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, 
+                                         aInitialLower.copy(), aInitialUpper.copy(), 0)
+                    pbar.update(1)
             MOCUInitial = np.mean(it_temp_val)
             
             # CRITICAL: Ensure all MOCU operations complete BEFORE initializing MPNN methods
@@ -263,9 +267,10 @@ if __name__ == '__main__':
                 )
                 
                 total_time = time.time() - method_start_time
-                print(f"✓ Completed in {total_time:.2f}s")
-                print(f"  Final MOCU: {MOCUCurve[-1]:.6f}")
-                print(f"  Experiment sequence: {experimentSequence}")
+                method_pbar.set_postfix({
+                    'Time': f'{total_time:.1f}s',
+                    'Final MOCU': f'{MOCUCurve[-1]:.6f}'
+                })
                 
                 # Save results
                 outMOCUFile = open(os.path.join(result_folder, f'{method_name}_MOCU.txt'), 'a')
@@ -289,6 +294,12 @@ if __name__ == '__main__':
                 continue
         
         numberOfVaildSimulations += 1
+        sim_pbar.update(1)
+        sim_pbar.set_postfix({
+            'Completed': f'{numberOfVaildSimulations}/{numberOfSimulationsPerMethod}'
+        })
+    
+    sim_pbar.close()
     
     # ========== Final summary ==========
     print(f"\n{'='*80}")

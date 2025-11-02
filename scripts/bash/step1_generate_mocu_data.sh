@@ -32,6 +32,9 @@ cd "${PROJECT_ROOT}/scripts"
 ABS_DATA_FOLDER=$(cd "$DATA_FOLDER" && pwd)
 
 CMD="python3 generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $ABS_DATA_FOLDER"
+
+# MOCU is always computed twice (removed --compute_twice flag - always enabled for stability)
+
 if [ "$SAVE_JSON" = "true" ]; then
     CMD="$CMD --save_json"
 fi
