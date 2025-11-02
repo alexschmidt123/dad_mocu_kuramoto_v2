@@ -315,8 +315,18 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Fast: Use MPNN predictor (reuses same logic as iNN/NN from paper 2023)
             # IMPORTANT: When using MPNN, we don't import PyCUDA at all
             # This keeps them separate, just like the original paper
+            
+            # Ensure CUDA is synchronized before MPNN prediction (policy network might have pending operations)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            
             from src.models.predictors.mocu_predictor_utils import predict_mocu
             terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+            
+            # Ensure MPNN prediction is complete before continuing
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
         else:
             # Slow but exact: Use direct CUDA MOCU computation
             # Only import PyCUDA here when actually needed (lazy import)
@@ -469,8 +479,39 @@ def main():
                     # Ensure model is properly moved to device and in eval mode
                     if mocu_model is not None:
                         mocu_model.eval()
+                        # Move model to device and ensure it's ready
+                        mocu_model = mocu_model.to(device)
                         if torch.cuda.is_available():
                             torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                        
+                        # Test model with a dummy forward pass to catch any initialization issues early
+                        try:
+                            from src.models.predictors.all_predictors import get_edge_index, get_edge_attr_from_bounds
+                            import numpy as np
+                            # Create a test input
+                            test_w = np.zeros(N)
+                            test_a_lower = np.zeros((N, N))
+                            test_a_upper = np.ones((N, N))
+                            
+                            from torch_geometric.data import Data
+                            test_x = torch.from_numpy(test_w.astype(np.float32)).unsqueeze(-1).to(device)
+                            test_edge_index = get_edge_index(N).to(device)
+                            test_edge_attr = get_edge_attr_from_bounds(test_a_lower, test_a_upper, N).to(device)
+                            test_data = Data(x=test_x, edge_index=test_edge_index, edge_attr=test_edge_attr).to(device)
+                            
+                            with torch.no_grad():
+                                _ = mocu_model(test_data)
+                            
+                            if torch.cuda.is_available():
+                                torch.cuda.synchronize()
+                            
+                            print(f"[REINFORCE] MPNN predictor test forward pass successful")
+                        except Exception as test_e:
+                            print(f"[REINFORCE] Warning: MPNN predictor test failed: {test_e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Don't fail - let it try during actual training, but warn user
                     
                     print(f"[REINFORCE] Using MPNN predictor '{model_name}' for fast MOCU estimation")
                 except FileNotFoundError as e:

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Main script to run complete MOCU-OED experiment workflow
+# Main workflow script - ORCHESTRATES separate steps
+# Each step runs in its own process for clean CUDA context isolation
 # Usage: bash run.sh configs/N5_config.yaml
 
 set -e  # Exit on error
@@ -31,61 +32,24 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# Extract config name from path (e.g., "N5_config" from "configs/N5_config.yaml")
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
-
-# Generate timestamp for this run (format: MMDDYYYY_HHMMSS in 24h format)
 TIMESTAMP=$(date +"%m%d%Y_%H%M%S")
-
-# New folder structure:
-# - data/{config_name}/          (reusable, no timestamp)
-# - models/{config_name}/{timestamp}/  (timestamped runs)
-# - results/{config_name}/{timestamp}/ (timestamped runs)
-
-# Base folders (in project root)
-DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/"
-MODEL_RUN_FOLDER="${PROJECT_ROOT}/models/${CONFIG_NAME}/${TIMESTAMP}/"
-RESULT_RUN_FOLDER="${PROJECT_ROOT}/results/${CONFIG_NAME}/${TIMESTAMP}/"
-
-# Create folders
-mkdir -p "$DATA_FOLDER"
-mkdir -p "$MODEL_RUN_FOLDER"
-mkdir -p "$RESULT_RUN_FOLDER"
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}MOCU-OED Experiment Workflow${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "Config file: ${YELLOW}$CONFIG_FILE${NC}"
-echo -e "Config name: ${YELLOW}$CONFIG_NAME${NC}"
 echo -e "Run timestamp: ${YELLOW}$TIMESTAMP${NC}"
-echo -e "Data folder: ${YELLOW}$DATA_FOLDER${NC}"
-echo -e "Models folder: ${YELLOW}$MODEL_RUN_FOLDER${NC}"
-echo -e "Results folder: ${YELLOW}$RESULT_RUN_FOLDER${NC}"
-if [ -n "$N_GLOBAL_UPDATED" ]; then
-    echo -e "${BLUE}[Re-execution after N_global update]${NC}"
-fi
 echo ""
 
-# Parse YAML config file
+# Parse basic config
 N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
 N_GLOBAL=$(grep "^N_global:" $CONFIG_FILE | awk '{print $2}')
-TRAINED_MODEL_NAME=$(grep "model_name:" $CONFIG_FILE | awk '{print $2}' | tr -d '"')
-SAMPLES=$(grep "samples_per_type:" $CONFIG_FILE | awk '{print $2}')
-TRAIN_SIZE=$(grep "train_size:" $CONFIG_FILE | awk '{print $2}')
-K_MAX=$(grep -A 3 "^dataset:" $CONFIG_FILE | grep "K_max:" | awk '{print $2}')
-EPOCHS=$(grep "epochs:" $CONFIG_FILE | awk '{print $2}')
-CONSTRAIN_WEIGHT=$(grep "constrain_weight:" $CONFIG_FILE | awk '{print $2}')
-SAVE_JSON=$(grep "save_json:" $CONFIG_FILE | awk '{print $2}')
-
-# Parse methods list from config
 METHODS=$(grep -A 20 "^  methods:" $CONFIG_FILE | grep '    - "' | sed 's/.*"\(.*\)".*/\1/' | grep -v '^#' | tr '\n' ',' | sed 's/,$//')
 
 echo -e "${BLUE}Experiment Configuration:${NC}"
 echo "  System size (N): $N"
 echo "  N_global: $N_GLOBAL"
-echo "  Samples per type: $SAMPLES"
-echo "  Training set size: $TRAIN_SIZE"
-echo "  Epochs: $EPOCHS"
 echo "  Methods to evaluate: $METHODS"
 echo ""
 
@@ -111,231 +75,36 @@ else
     echo -e "${GREEN}✓${NC} N_global is correctly set to $N_GLOBAL"
 fi
 
-# Function to check if data exists and matches config requirements
-check_and_generate_data() {
-    local data_type=$1  # "mocu" or "dad"
-    local need_generate=false
-    
-    if [ "$data_type" = "mocu" ]; then
-        # Check for MPNN training data
-        EXISTING_TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
-        
-        if [ -n "$EXISTING_TRAIN_FILE" ]; then
-            # File exists - check if it has reasonable size (at least some samples)
-            EXISTING_SIZE=$(basename "$EXISTING_TRAIN_FILE" | sed "s/_${N}o_train.pth//")
-            
-            # If existing file has very few samples (less than 50% of requested), regenerate
-            if [ "$EXISTING_SIZE" -lt $((TRAIN_SIZE / 2)) ] 2>/dev/null; then
-                echo -e "${YELLOW}  Existing data has only ${EXISTING_SIZE} samples (requested ${TRAIN_SIZE})${NC}"
-                echo -e "${YELLOW}  Will regenerate to get more samples${NC}"
-                need_generate=true
-            else
-                echo -e "${GREEN}✓${NC} MPNN dataset found: $EXISTING_TRAIN_FILE"
-                echo "  Reusing existing data (${EXISTING_SIZE} samples)"
-                TRAIN_FILE="$EXISTING_TRAIN_FILE"
-                need_generate=false
-            fi
-        else
-            need_generate=true
-        fi
-        
-        if [ "$need_generate" = true ]; then
-            echo "  Generating MPNN dataset (this may take time)..."
-            echo -e "${YELLOW}  Note: Actual file size may differ from config due to sync filtering${NC}"
-            
-            cd scripts
-            ABS_DATA_FOLDER=$(cd "${DATA_FOLDER}" && pwd)
-            
-            CMD="python generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $ABS_DATA_FOLDER"
-            if [ "$SAVE_JSON" = "true" ]; then
-                CMD="$CMD --save_json"
-            fi
-            
-            eval $CMD
-            cd "$PROJECT_ROOT"
-            
-            TRAIN_FILE=$(find "${DATA_FOLDER}" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
-            
-            if [ -z "$TRAIN_FILE" ]; then
-                echo -e "${RED}Error: No training file found in ${DATA_FOLDER}${NC}"
-                exit 1
-            fi
-            
-            ACTUAL_SIZE=$(basename "$TRAIN_FILE" | sed "s/_${N}o_train.pth//")
-            echo -e "${GREEN}✓${NC} MPNN dataset generated: $TRAIN_FILE"
-            if [ "$ACTUAL_SIZE" != "$TRAIN_SIZE" ]; then
-                echo -e "${YELLOW}  Note: Generated ${ACTUAL_SIZE} samples (config requested ${TRAIN_SIZE})${NC}"
-            fi
-        fi
-        
-    elif [ "$data_type" = "dad" ]; then
-        # Check for DAD trajectory data
-        DAD_DATA_DIR="${DATA_FOLDER}dad/"
-        EXISTING_DAD_FILE=$(find "$DAD_DATA_DIR" -name "dad_trajectories_N${N}_K4_random.pth" -type f 2>/dev/null | head -1)
-        
-        if [ -n "$EXISTING_DAD_FILE" ]; then
-            echo -e "${GREEN}✓${NC} DAD trajectories found: $EXISTING_DAD_FILE"
-            echo "  Reusing existing data"
-            DAD_TRAJECTORY_FILE="$EXISTING_DAD_FILE"
-            need_generate=false
-        else
-            echo "  Generating DAD trajectory data..."
-            mkdir -p "$DAD_DATA_DIR"
-            ABS_DAD_DATA_FOLDER=$(cd "$DAD_DATA_DIR" && pwd)
-            
-            cd scripts
-            python generate_dad_data.py \
-                --N $N \
-                --num-episodes 100 \
-                --K 4 \
-                --output-dir "$ABS_DAD_DATA_FOLDER"
-            cd "$PROJECT_ROOT"
-            
-            DAD_TRAJECTORY_FILE=$(find "$DAD_DATA_DIR" -name "dad_trajectories_N${N}_K4_random.pth" -type f 2>/dev/null | head -1)
-            
-            if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
-                echo -e "${RED}Error: DAD trajectory file not found${NC}"
-                exit 1
-            fi
-            
-            echo -e "${GREEN}✓${NC} DAD trajectories generated: $DAD_TRAJECTORY_FILE"
-            need_generate=true
-        fi
-    fi
-}
-
-# Step 1: Check and generate MPNN dataset
+# Step 1: Generate MPNN data (runs in separate process - uses PyCUDA)
 echo ""
-echo -e "${GREEN}[Step 1/5]${NC} Checking MPNN dataset..."
-check_and_generate_data "mocu"
+echo -e "${GREEN}[Step 1/5]${NC} Generating MPNN training data..."
+bash "${PROJECT_ROOT}/workflows/step1_generate_mocu_data.sh" "$CONFIG_FILE"
+TRAIN_FILE=$(cat /tmp/mocu_train_file_${CONFIG_NAME}.txt)
 
-# Step 2: Train model (save to timestamped folder)
+# Step 2: Train MPNN predictor (runs in separate process - uses PyTorch only)
 echo ""
 echo -e "${GREEN}[Step 2/5]${NC} Training MPNN predictor..."
-echo "  This may take 1-2 hours..."
+bash "${PROJECT_ROOT}/workflows/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
 
-ABS_TRAIN_FILE=$(cd "$(dirname "$TRAIN_FILE")" && pwd)/$(basename "$TRAIN_FILE")
-ABS_MODEL_RUN_FOLDER=$(cd "$MODEL_RUN_FOLDER" && pwd)
-
-cd scripts
-# Save model directly to the timestamped folder
-# Pass the full path to the timestamp folder as output_dir, and use a special marker for empty name
-# This way train_mocu_predictor.py saves directly to models/fast_config/11012025_163858/
-# Note: Using "__USE_OUTPUT_DIR__" as a marker since bash might not pass empty string correctly
-python train_mocu_predictor.py \
-    --name "__USE_OUTPUT_DIR__" \
-    --data_path "$ABS_TRAIN_FILE" \
-    --EPOCH $EPOCHS \
-    --Constrain_weight $CONSTRAIN_WEIGHT \
-    --output_dir "$ABS_MODEL_RUN_FOLDER"
-cd "$PROJECT_ROOT"
-
-echo -e "${GREEN}✓${NC} Model trained: ${MODEL_RUN_FOLDER}model.pth"
-
-# Export experiment ID (for DAD training and evaluation)
-# Model name format: {config_name}_{timestamp} for backward compatibility
-# But model is saved as: models/{config_name}/{timestamp}/model.pth
-export MOCU_MODEL_NAME="${CONFIG_NAME}_${TIMESTAMP}"
-
-# Step 2.5: Check if DAD is in methods and train if needed
-echo ""
+# Step 3: Train DAD policy (runs in separate process - uses MPNN predictor only, no PyCUDA)
 if echo "$METHODS" | grep -q "DAD"; then
-    echo -e "${GREEN}[Step 2.5/5]${NC} Training DAD policy (DAD detected in methods)..."
-    
-    # Step 2.5a: Check and generate DAD trajectory data (AFTER MPNN is trained)
-    echo "  [2.5a] Checking DAD trajectory data..."
-    echo "  Note: DAD data generation uses random actions (REINFORCE doesn't need expert labels)"
-    echo "        MOCU is computed during training using the trained MPNN predictor"
-    
-    check_and_generate_data "dad"
-    
-    # Step 2.5b: Train DAD policy
     echo ""
-    echo "  [2.5b] Training DAD policy network..."
-    
-    DAD_METHOD=$(grep "dad_method:" $CONFIG_FILE | awk '{print $2}' | tr -d '"' || echo "reinforce")
-    
-    if [ "$DAD_METHOD" != "imitation" ] && [ "$DAD_METHOD" != "reinforce" ]; then
-        echo -e "${YELLOW}Warning: Unknown DAD method '$DAD_METHOD', defaulting to 'reinforce'${NC}"
-        DAD_METHOD="reinforce"
-    fi
-    
-    echo "  Training method: $DAD_METHOD"
-    if [ "$DAD_METHOD" = "reinforce" ]; then
-        echo -e "${BLUE}  Using REINFORCE (direct MOCU optimization)${NC}"
-    else
-        echo -e "${BLUE}  Using Imitation Learning${NC}"
-    fi
-    
-    ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$DAD_TRAJECTORY_FILE")
-    
-    # Check if MPNN predictor is available
-    USE_PREDICTED_MOCU=""
-    if [ "$DAD_METHOD" = "reinforce" ]; then
-        MPNN_MODEL_PATH="${MODEL_RUN_FOLDER}model.pth"
-        if [ -f "$MPNN_MODEL_PATH" ]; then
-            USE_PREDICTED_MOCU="--use-predicted-mocu"
-            echo -e "${BLUE}  Using MPNN predictor for fast MOCU estimation${NC}"
-        else
-            echo -e "${YELLOW}  Warning: MPNN predictor not found. Using slow CUDA MOCU computation.${NC}"
-        fi
-    fi
-    
-    cd scripts
-    python train_dad_policy.py \
-        --data-path "$ABS_DAD_TRAJ_FILE" \
-        --method "$DAD_METHOD" \
-        --name "dad_policy_N${N}" \
-        --epochs 100 \
-        --batch-size 64 \
-        --output-dir "$ABS_MODEL_RUN_FOLDER" \
-        $USE_PREDICTED_MOCU
-    cd "$PROJECT_ROOT"
-    
-    echo -e "${GREEN}✓${NC} DAD policy trained: ${MODEL_RUN_FOLDER}dad_policy_N${N}.pth"
-    
-    # Export DAD policy path for evaluation (set after training completes)
-    export DAD_POLICY_PATH="${MODEL_RUN_FOLDER}dad_policy_N${N}.pth"
+    echo -e "${GREEN}[Step 3/5]${NC} Training DAD policy..."
+    bash "${PROJECT_ROOT}/workflows/step3_train_dad.sh" "$CONFIG_FILE"
 else
-    echo -e "${BLUE}[Step 2.5/5]${NC} Skipping DAD training (not in methods list)"
-    # Try to find existing DAD policy (from previous run)
-    DAD_POLICY_PATH="${MODEL_RUN_FOLDER}dad_policy_N${N}.pth"
-    if [ -f "$DAD_POLICY_PATH" ]; then
-        export DAD_POLICY_PATH="$DAD_POLICY_PATH"
-        echo -e "${BLUE}  Found existing DAD policy: $DAD_POLICY_PATH${NC}"
-    fi
+    echo ""
+    echo -e "${BLUE}[Step 3/5]${NC} Skipping DAD training (not in methods list)"
 fi
 
-# Step 3: Export configuration for evaluation scripts
+# Step 4: Evaluate methods (runs in separate process - may use PyCUDA for evaluation)
 echo ""
-echo -e "${GREEN}[Step 3/5]${NC} Configuring experiment paths..."
+echo -e "${GREEN}[Step 4/5]${NC} Running evaluation..."
+bash "${PROJECT_ROOT}/workflows/step4_evaluate.sh" "$CONFIG_FILE"
 
-export RESULT_FOLDER="$RESULT_RUN_FOLDER"
-
-echo -e "${GREEN}✓${NC} MOCU model name: $MOCU_MODEL_NAME (via MOCU_MODEL_NAME)"
-echo -e "${GREEN}✓${NC} Result folder: $RESULT_RUN_FOLDER (via RESULT_FOLDER)"
-
-# Step 4: Run experiments
-echo ""
-echo -e "${GREEN}[Step 4/5]${NC} Running OED experiments..."
-
-cd scripts
-python evaluation.py --methods "$METHODS"
-cd "$PROJECT_ROOT"
-
-echo -e "${GREEN}✓${NC} Experiments complete: $RESULT_RUN_FOLDER"
-
-# Step 5: Generate visualizations
+# Step 5: Generate visualizations (runs in separate process)
 echo ""
 echo -e "${GREEN}[Step 5/5]${NC} Generating visualizations..."
-
-ABS_RESULT_FOLDER=$(cd "$RESULT_RUN_FOLDER" && pwd)
-
-cd scripts
-python visualization.py --N $N --update_cnt 10 --result_folder "$ABS_RESULT_FOLDER"
-cd "$PROJECT_ROOT"
-
-echo -e "${GREEN}✓${NC} Plots generated: ${RESULT_RUN_FOLDER}MOCU_${N}.png, ${RESULT_RUN_FOLDER}timeComplexity_${N}.png"
+bash "${PROJECT_ROOT}/workflows/step5_visualize.sh" "$CONFIG_FILE"
 
 # Summary
 echo ""
@@ -343,33 +112,9 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✓ Workflow Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${BLUE}Folder Structure:${NC}"
-echo ""
-echo -e "${BLUE}Data (reusable):${NC}"
-echo "  ${DATA_FOLDER}"
-echo "  ├── *_${N}o_train.pth  (MPNN training data)"
-if echo "$METHODS" | grep -q "DAD"; then
-    echo "  └── dad/"
-    echo "      └── dad_trajectories_N${N}_K4_random.pth"
+echo -e "${BLUE}Results:${NC}"
+RESULT_RUN_FOLDER=$(ls -td ${PROJECT_ROOT}/results/${CONFIG_NAME}/*/ 2>/dev/null | head -1)
+if [ -n "$RESULT_RUN_FOLDER" ]; then
+    echo "  $RESULT_RUN_FOLDER"
 fi
 echo ""
-echo -e "${BLUE}Models (run-specific):${NC}"
-echo "  ${MODEL_RUN_FOLDER}"
-echo "  ├── model.pth                   (Trained MPNN predictor)"
-echo "  ├── statistics.pth              (MPNN normalization stats)"
-echo "  ├── curve.png                    (Training curve 1)"
-echo "  ├── curve2.png                   (Training curve 2)"
-echo "  └── Prediction.xlsx              (Prediction results)"
-if echo "$METHODS" | grep -q "DAD"; then
-    echo "  └── dad_policy_N${N}.pth        (Trained DAD policy) ⭐"
-fi
-echo ""
-echo -e "${BLUE}Results (run-specific):${NC}"
-echo "  ${RESULT_RUN_FOLDER}"
-echo "  ├── *_MOCU.txt                  (MOCU curves)"
-echo "  ├── *_timeComplexity.txt        (Time complexity)"
-echo "  ├── *_sequence.txt              (Experiment sequences)"
-echo "  ├── MOCU_${N}.png               (MOCU comparison plot)"
-echo "  └── timeComplexity_${N}.png     (Time complexity plot)"
-echo ""
-echo -e "${GREEN}All done!${NC}"

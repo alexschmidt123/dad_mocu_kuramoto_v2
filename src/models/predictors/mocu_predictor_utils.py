@@ -153,27 +153,50 @@ def predict_mocu(model, mean, std, w, a_lower, a_upper, device='cuda'):
     Returns:
         mocu_pred: Predicted MOCU value (scalar)
     """
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    device_obj = torch.device(device if torch.cuda.is_available() else 'cpu')
     N = len(w)
+    
+    # Ensure model is on correct device and in eval mode
+    if model is None:
+        raise ValueError("MPNN model is None - cannot predict MOCU")
+    
+    model.eval()
+    model = model.to(device_obj)
+    
+    # Ensure CUDA is synchronized before creating data to avoid conflicts
+    if device_obj.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
     
     # Create PyG Data object (same format as iNN/NN methods)
     x = torch.from_numpy(w.astype(np.float32)).unsqueeze(-1)  # [N, 1]
-    edge_index = get_edge_index(N).to(device)
-    edge_attr = get_edge_attr_from_bounds(a_lower, a_upper, N).to(device)
+    edge_index = get_edge_index(N).to(device_obj)
+    edge_attr = get_edge_attr_from_bounds(a_lower, a_upper, N).to(device_obj)
     
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    data = data.to(device)
+    data = data.to(device_obj)
     
-    # Predict (same as iNN/NN)
-    # Ensure CUDA is synchronized before prediction to avoid conflicts
-    if device.type == 'cuda' and torch.cuda.is_available():
+    # Ensure data is on device before prediction
+    if device_obj.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize()
     
-    with torch.no_grad():
-        pred_normalized = model(data).cpu().item()
+    # Predict (same as iNN/NN)
+    # Use torch.no_grad() to avoid gradient computation
+    try:
+        with torch.no_grad():
+            pred_normalized = model(data)
+            # Move to CPU before converting to item (safer)
+            if device_obj.type == 'cuda':
+                torch.cuda.synchronize()
+            pred_normalized = pred_normalized.cpu().item()
+    except Exception as e:
+        # If prediction fails, synchronize CUDA and re-raise
+        if device_obj.type == 'cuda' and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        raise RuntimeError(f"MPNN prediction failed: {e}") from e
     
     # Ensure prediction is complete
-    if device.type == 'cuda' and torch.cuda.is_available():
+    if device_obj.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize()
     
     # Denormalize (same as iNN/NN)
