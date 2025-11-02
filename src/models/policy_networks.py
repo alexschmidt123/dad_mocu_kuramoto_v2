@@ -86,95 +86,74 @@ class DADPolicyNetwork(nn.Module):
     def encode_state(self, state_data):
         """
         Encode current state (w, a_lower, a_upper) using GNN.
-        
-        Args:
-            state_data: PyTorch Geometric Data or Batch object
-        
-        Returns:
-            state_embedding: [batch_size, hidden_dim]
         """
-        # Ensure we're on the correct device (model's device)
         device = next(self.parameters()).device
-        
-        # Ensure all state_data components are on correct device BEFORE extracting
         state_data = state_data.to(device)
         
-        # Node features
-        x = state_data.x  # [batch_size * N, 1]
+        x = state_data.x
         edge_index = state_data.edge_index
-        edge_attr = state_data.edge_attr  # [num_edges, 2]
+        edge_attr = state_data.edge_attr
         batch = state_data.batch if hasattr(state_data, 'batch') else None
         
-        # Initial embedding (same pattern as MPNNPlusPredictor which works)
-        out = F.relu(self.lin0(x))  # [batch_size * N, encoding_dim]
-        h = out.unsqueeze(0)  # [1, batch_size * N, encoding_dim]
+        # Initial embedding
+        out = F.relu(self.lin0(x))
+        h = out.unsqueeze(0)
         
-        # Message passing (same pattern as MPNNPlusPredictor)
-        # Temporarily disable cuDNN to avoid stream mismatch issues
-        # This is a workaround for CUDNN_STATUS_BAD_PARAM_STREAM_MISMATCH
+        # === FIX: Disable cuDNN for message passing ===
         cudnn_enabled = torch.backends.cudnn.enabled
         try:
-            # Disable cuDNN for this operation to avoid stream issues
             torch.backends.cudnn.enabled = False
             for _ in range(3):
                 m = F.relu(self.conv(out, edge_index, edge_attr))
-                m_input = m.unsqueeze(0)  # [1, batch_size * N, encoding_dim]
+                m_input = m.unsqueeze(0)
                 out, h = self.gru(m_input, h)
                 out = out.squeeze(0)
         finally:
-            # Restore original cuDNN setting
             torch.backends.cudnn.enabled = cudnn_enabled
         
-        # Graph-level pooling
-        # Set2Set uses LSTM internally which can cause cuDNN stream mismatch errors
-        # For single graphs (no batch), use simpler pooling to avoid cuDNN issues
-        # For batched graphs, we still need Set2Set but with cuDNN disabled
+        # === FIX: Handle pooling with cuDNN disabled ===
         if batch is not None:
             # Batched case - use Set2Set with cuDNN disabled
             if device.type == 'cuda':
                 torch.cuda.synchronize()
+            
             cudnn_enabled = torch.backends.cudnn.enabled
             cudnn_benchmark = torch.backends.cudnn.benchmark
             try:
                 torch.backends.cudnn.enabled = False
                 torch.backends.cudnn.benchmark = False
+                
                 if batch.device != device:
                     batch = batch.to(device)
                 if not batch.is_contiguous():
                     batch = batch.contiguous()
                 if not out.is_contiguous():
                     out = out.contiguous()
-                out = self.set2set(out, batch)  # [batch_size, 2 * encoding_dim]
+                
+                out = self.set2set(out, batch)
+                
                 if device.type == 'cuda':
                     torch.cuda.synchronize()
             finally:
                 torch.backends.cudnn.enabled = cudnn_enabled
                 torch.backends.cudnn.benchmark = cudnn_benchmark
         else:
-            # Single graph case - use mean+max pooling instead of Set2Set to avoid cuDNN issues
-            # This avoids the LSTM in Set2Set which causes stream mismatch
+            # Single graph - use simpler pooling
+            from torch_geometric.nn import global_mean_pool, global_max_pool
             batch_tensor = torch.zeros(out.size(0), dtype=torch.long, device=device)
-            mean_pool = global_mean_pool(out, batch_tensor)  # [1, encoding_dim]
-            max_pool = global_max_pool(out, batch_tensor)    # [1, encoding_dim]
-            out = torch.cat([mean_pool, max_pool], dim=-1)    # [1, 2 * encoding_dim]
+            mean_pool = global_mean_pool(out, batch_tensor)
+            max_pool = global_max_pool(out, batch_tensor)
+            out = torch.cat([mean_pool, max_pool], dim=-1)
         
-        state_embedding = self.graph_mlp(out)  # [batch_size, hidden_dim]
+        state_embedding = self.graph_mlp(out)
         
         return state_embedding
-    
+
     def encode_history(self, history_data):
         """
         Encode history of past (action, observation) pairs using LSTM.
-        
-        Args:
-            history_data: List of (i, j, obs) tuples, or batch of such lists
-                Shape: [batch_size, seq_len, 3] where 3 = (i, j, obs)
-        
-        Returns:
-            history_embedding: [batch_size, hidden_dim]
         """
         if history_data is None or len(history_data) == 0:
-            # No history yet (first step)
             batch_size = 1
             device = next(self.parameters()).device
             return torch.zeros(batch_size, self.hidden_dim, device=device)
@@ -185,11 +164,10 @@ class DADPolicyNetwork(nn.Module):
                 device = next(self.parameters()).device
                 return torch.zeros(1, self.hidden_dim, device=device)
             
-            # Single trajectory
-            history_tensor = torch.tensor(history_data, dtype=torch.long)  # [seq_len, 3]
-            history_tensor = history_tensor.unsqueeze(0)  # [1, seq_len, 3]
+            history_tensor = torch.tensor(history_data, dtype=torch.long)
+            history_tensor = history_tensor.unsqueeze(0)
         else:
-            history_tensor = history_data  # [batch_size, seq_len, 3]
+            history_tensor = history_data
         
         device = next(self.parameters()).device
         history_tensor = history_tensor.to(device)
@@ -197,42 +175,44 @@ class DADPolicyNetwork(nn.Module):
         batch_size, seq_len, _ = history_tensor.shape
         
         # Embed i, j, obs separately
-        i_indices = history_tensor[:, :, 0]  # [batch_size, seq_len]
-        j_indices = history_tensor[:, :, 1]  # [batch_size, seq_len]
-        obs_indices = history_tensor[:, :, 2]  # [batch_size, seq_len]
+        i_indices = history_tensor[:, :, 0]
+        j_indices = history_tensor[:, :, 1]
+        obs_indices = history_tensor[:, :, 2]
         
-        i_emb = self.history_embed(i_indices)  # [batch_size, seq_len, hidden_dim//4]
+        i_emb = self.history_embed(i_indices)
         j_emb = self.history_embed(j_indices)
-        obs_emb = self.obs_embed(obs_indices)  # [batch_size, seq_len, hidden_dim//4]
+        obs_emb = self.obs_embed(obs_indices)
         
-        # Concatenate embeddings
-        history_emb = torch.cat([i_emb, j_emb], dim=-1)  # [batch_size, seq_len, hidden_dim//2]
+        history_emb = torch.cat([i_emb, j_emb], dim=-1)
         
-        # Ensure contiguous
         if not history_emb.is_contiguous():
             history_emb = history_emb.contiguous()
         
-        # LSTM encoding with cuDNN disabled to avoid stream mismatch
+        # === FIX: Disable cuDNN for LSTM to avoid conflicts ===
         if device.type == 'cuda':
             torch.cuda.synchronize()
         
         cudnn_enabled = torch.backends.cudnn.enabled
         cudnn_benchmark = torch.backends.cudnn.benchmark
         try:
+            # Temporarily disable cuDNN
             torch.backends.cudnn.enabled = False
             torch.backends.cudnn.benchmark = False
+            
             lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
+            
             if device.type == 'cuda':
                 torch.cuda.synchronize()
         finally:
+            # Restore cuDNN settings
             torch.backends.cudnn.enabled = cudnn_enabled
             torch.backends.cudnn.benchmark = cudnn_benchmark
         
-        # Use final hidden state
-        history_embedding = h_n[-1]  # [batch_size, hidden_dim]
+        history_embedding = h_n[-1]
         
         return history_embedding
-    
+
+
     def forward(self, state_data, history_data=None, available_actions_mask=None):
         """
         Forward pass: compute action logits.
