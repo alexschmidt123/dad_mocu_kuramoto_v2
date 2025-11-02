@@ -237,7 +237,16 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     T = 5.0
     M = int(T / h)
     
-    for traj in trajectories:
+    # CRITICAL: Ensure clean CUDA state before training loop
+    # This is especially important when using MPNN predictor
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    
+    for traj_idx, traj in enumerate(trajectories):
+        # Periodically synchronize and clear cache to prevent memory buildup
+        if traj_idx > 0 and traj_idx % 10 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
         optimizer.zero_grad()
         
         w = traj['w']
@@ -262,6 +271,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         K = len(traj['actions'])  # Number of steps (determined by expert trajectory length)
         
         for step in range(K):
+            # Ensure clean CUDA state before policy network operations
+            # This prevents conflicts with MPNN predictor if it was used in previous iteration
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            
             # Create state from current bounds
             state_data = create_state_data(w, a_lower, a_upper, device=device)
             
@@ -288,7 +303,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             available_mask_tensor = torch.from_numpy(available_mask_array).to(device)
             
             # Sample action from current policy (NOT expert action!)
+            # CRITICAL: Ensure policy network operations complete before MPNN prediction
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)
+            
+            # Ensure policy network forward pass is complete
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             
             # Sample from policy distribution
             dist = torch.distributions.Categorical(probs=action_probs)
@@ -307,6 +327,10 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             observed_pairs.append((action_i, action_j))
             observations_list.append(observation)
             log_probs.append(log_prob)
+            
+            # CRITICAL: Ensure all operations complete before next iteration
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
         
         # Compute terminal MOCU for this policy rollout
         # This is the DIRECT objective we want to minimize
@@ -358,13 +382,25 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         # Total loss for this trajectory: directly tied to terminal MOCU
         loss = torch.stack(policy_loss).sum()
         
+        # CRITICAL: Ensure MPNN operations are complete before backward pass
+        if use_predicted_mocu and mocu_model is not None and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
         # Backward pass
         loss.backward()
+        
+        # CRITICAL: Ensure backward pass completes before next iteration
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         # Gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         optimizer.step()
+        
+        # CRITICAL: Ensure optimizer step completes before next trajectory
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         total_loss += loss.item()
         total_reward += reward
