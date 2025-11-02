@@ -188,45 +188,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                     use_baseline=True, mocu_model=None, mocu_mean=None, mocu_std=None, use_predicted_mocu=False):
     """
     Train using REINFORCE policy gradient with MOCU DIRECTLY as the loss.
-    
-    This performs true on-policy learning: samples actions from the current policy,
-    rolls out full trajectories, and uses terminal MOCU DIRECTLY as the reward signal.
-    
-    IMPORTANT: The loss is directly tied to terminal MOCU. Minimizing this loss
-    directly minimizes the expected terminal MOCU, which is the true objective.
-    
-    Args:
-        mocu_model: Loaded MPNNPlusPredictor model (from load_mpnn_predictor)
-        mocu_mean: Normalization mean for MPNN predictor
-        mocu_std: Normalization std for MPNN predictor
-        use_predicted_mocu: If True, use MPNN predictor for fast MOCU estimation (recommended)
-                           If False, use direct CUDA MOCU computation (slow but exact)
-    
-    Required data in trajectories:
-        - 'w': Natural frequencies [N]
-        - 'a_true': Ground truth coupling matrix [N, N] (REQUIRED for RL)
-        - 'states': List of (a_lower, a_upper) tuples, with states[0] being initial bounds
-        - 'actions': List of expert actions (used to determine trajectory length K)
-    
-    Reward: Negative terminal MOCU (want to maximize = minimize MOCU)
-    
-    Args:
-        model: DADPolicyNetwork to train
-        trajectories: List of trajectory dicts (must contain 'a_true')
-        optimizer: PyTorch optimizer
-        device: torch device
-        N: Number of oscillators
-        gamma: Discount factor (default 0.99, but we use undiscounted terminal reward)
-        K_max: Monte Carlo samples for MOCU computation
-        use_baseline: If True, subtract running average as baseline (reduces variance)
     """
-    # Lazy import: Only import PyCUDA when actually needed (when use_predicted_mocu=False)
-    # This avoids initializing PyCUDA context when using MPNN predictor, preventing stream conflicts
-    # This matches the original paper's pattern: separate usage of MPNN and PyCUDA
     from scripts.generate_dad_data import perform_experiment, update_bounds
     
-    # Import predict_mocu at function level if using MPNN (not inside the loop)
-    # This avoids repeated imports that could cause issues
     if use_predicted_mocu and mocu_model is not None:
         from src.models.predictors.predictor_utils import predict_mocu
     
@@ -234,178 +198,138 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     total_loss = 0
     total_reward = 0
     
-    # Running baseline for variance reduction
     baseline = 0.0
-    baseline_alpha = 0.9  # Exponential moving average
+    baseline_alpha = 0.9
     
     h = 1.0 / 160.0
     T = 5.0
     M = int(T / h)
     
     # CRITICAL: Ensure clean CUDA state before training loop
-    # This is especially important when using MPNN predictor
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
     
     for traj_idx, traj in enumerate(trajectories):
-        # Periodically synchronize and clear cache to prevent memory buildup
+        # Periodically clear cache
         if traj_idx > 0 and traj_idx % 10 == 0 and torch.cuda.is_available():
+            torch.cuda.synchronize()  # ADD THIS
             torch.cuda.empty_cache()
+            
         optimizer.zero_grad()
         
         w = traj['w']
         a_true = traj.get('a_true', None)
         
-        # REQUIRED: a_true is necessary for REINFORCE to perform experiments
         if a_true is None:
-            raise ValueError(
-                "REINFORCE training requires 'a_true' in trajectories to perform experiments. "
-                "Please regenerate data with generate_dad_data.py (it includes a_true by default)."
-            )
+            raise ValueError("REINFORCE requires 'a_true' in trajectories")
         
-        # On-policy rollout: sample actions from current policy
         log_probs = []
         observed_pairs = []
-        observations_list = []  # Track observations for history
+        observations_list = []
         
-        # Start with initial bounds (from states[0])
         a_lower = traj['states'][0][0].copy()
         a_upper = traj['states'][0][1].copy()
         
-        K = len(traj['actions'])  # Number of steps (determined by expert trajectory length)
+        K = len(traj['actions'])
         
         for step in range(K):
-            # Ensure clean CUDA state before policy network operations
-            # This prevents conflicts with MPNN predictor if it was used in previous iteration
+            # === POLICY NETWORK FORWARD PASS ===
+            # Ensure clean state before policy operations
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # ADD THIS
+                torch.cuda.empty_cache()   # ADD THIS
             
-            # Create state from current bounds
             state_data = create_state_data(w, a_lower, a_upper, device=device)
             
-            # History from observed pairs
             if step == 0:
                 history_tensor = None
             else:
-                history_list = [(observed_pairs[k][0], 
-                               observed_pairs[k][1], 
-                               observations_list[k]) 
+                history_list = [(observed_pairs[k][0], observed_pairs[k][1], observations_list[k]) 
                               for k in range(len(observed_pairs))]
-                # Convert to tensor format expected by model
                 history_tensor = torch.tensor([history_list], dtype=torch.long, device=device)
             
-            # Available mask: exclude already observed pairs
             num_actions = N * (N - 1) // 2
             available_mask = np.ones(num_actions, dtype=np.float32)
             for (i_obs, j_obs) in observed_pairs:
                 action_idx = model.pair_to_idx(i_obs, j_obs)
                 available_mask[action_idx] = 0.0
             
-            # Convert numpy array to tensor properly (fixes warning and ensures correct device)
             available_mask_array = np.array([available_mask], dtype=np.float32)
             available_mask_tensor = torch.from_numpy(available_mask_array).to(device)
             
-            # Sample action from current policy (NOT expert action!)
-            # CRITICAL: Ensure policy network operations complete before MPNN prediction
+            # Policy forward pass
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)
             
-            # Ensure policy network forward pass is complete
+            # CRITICAL: Ensure policy forward completes before continuing
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
+                torch.cuda.synchronize()  # ADD THIS
             
-            # Sample from policy distribution
             dist = torch.distributions.Categorical(probs=action_probs)
             action_idx = dist.sample()
             log_prob = dist.log_prob(action_idx)
             
-            # Convert to (i, j) pair
             action_i, action_j = model.idx_to_pair(action_idx.item())
             
-            # Perform experiment using ground truth (get observation)
+            # === EXPERIMENT SIMULATION (CPU) ===
             observation = perform_experiment(a_true, action_i, action_j, w, h, M)
-            
-            # Update bounds based on observation
             a_lower, a_upper = update_bounds(a_lower, a_upper, action_i, action_j, observation, w)
             
             observed_pairs.append((action_i, action_j))
             observations_list.append(observation)
             log_probs.append(log_prob)
             
-            # CRITICAL: Ensure all operations complete before next iteration
+            # CRITICAL: Ensure all ops complete before next iteration
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
+                torch.cuda.synchronize()  # ADD THIS
         
-        # Compute terminal MOCU for this policy rollout
-        # This is the DIRECT objective we want to minimize
-        # Use fast MPNN prediction if available, otherwise use slow CUDA computation
+        # === MOCU COMPUTATION ===
         if use_predicted_mocu and mocu_model is not None:
-            # Fast: Use MPNN predictor (reuses same logic as iNN/NN from paper 2023)
-            # IMPORTANT: When using MPNN, we don't import PyCUDA at all
-            # This keeps them separate, just like the original paper
-            
-            # Ensure CUDA is synchronized before MPNN prediction (policy network might have pending operations)
+            # Ensure policy network is done
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # ADD THIS
+                torch.cuda.empty_cache()   # ADD THIS
             
-            # Use predict_mocu (already imported at function level)
             terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
             
-            # Ensure MPNN prediction is complete before continuing
+            # Ensure MPNN prediction completes
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
+                torch.cuda.synchronize()  # ADD THIS
         else:
-            # Slow but exact: Use direct CUDA MOCU computation
-            # Only import PyCUDA here when actually needed (lazy import)
-            # This ensures PyCUDA context is NOT initialized when using MPNN
             from src.core.mocu_backend import MOCU
             terminal_MOCU = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
         
-        # Convert MOCU to reward signal for policy gradient
-        # Reward = -MOCU (so maximizing reward = minimizing MOCU)
-        # This ensures the loss directly optimizes terminal MOCU
         reward = -terminal_MOCU
         
-        # Update baseline (exponential moving average) for variance reduction
         if use_baseline:
             baseline = baseline_alpha * baseline + (1 - baseline_alpha) * reward
         
-        # Baseline-subtracted advantage (reduces variance without changing optimal policy)
         advantage = reward - baseline if use_baseline else reward
         returns = [advantage] * len(log_probs)
         
-        # Policy gradient loss: DIRECTLY optimizes terminal MOCU
-        # Loss = -sum(log_prob * advantage) where advantage = -MOCU - baseline
-        # This means: minimizing loss = maximizing sum(log_prob * (-MOCU))
-        #           = minimizing expected terminal MOCU
         policy_loss = []
         for log_prob, advantage_val in zip(log_probs, returns):
             policy_loss.append(-log_prob * advantage_val)
         
-        # Total loss for this trajectory: directly tied to terminal MOCU
         loss = torch.stack(policy_loss).sum()
         
-        # CRITICAL: Ensure MPNN operations are complete before backward pass
+        # === BACKWARD PASS ===
+        # Ensure MOCU computation is done
         if use_predicted_mocu and mocu_model is not None and torch.cuda.is_available():
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # ADD THIS
         
-        # Backward pass
         loss.backward()
         
-        # CRITICAL: Ensure backward pass completes before next iteration
+        # Ensure backward completes
         if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # ADD THIS
         
-        # Gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
         optimizer.step()
         
-        # CRITICAL: Ensure optimizer step completes before next trajectory
+        # Ensure optimizer step completes
         if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # ADD THIS
         
         total_loss += loss.item()
         total_reward += reward
