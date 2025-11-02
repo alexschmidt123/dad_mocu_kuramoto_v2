@@ -3,18 +3,41 @@ CUDA-accelerated MOCU computation
 
 This module is part of the MOCU-OED project for optimal experimental design
 in coupled oscillator systems.
+
+IMPORTANT: PyCUDA initialization is LAZY to avoid conflicts with PyTorch.
+PyCUDA context is only created when MOCU() is actually called, not on import.
+This ensures clean separation when using MPNN predictor (which uses PyTorch).
 """
 
 import time
-import pycuda.autoinit
-
-import pycuda.driver as drv
-import pandas as pd
 import numpy as np
 
-from pycuda.compiler import SourceModule
+# LAZY INITIALIZATION: Only import and initialize PyCUDA when MOCU() is called
+# This prevents CUDA context conflicts with PyTorch when using MPNN predictor
+_pycuda_initialized = False
+_mod = None
+_task = None
+_drv = None
 
-mod = SourceModule("""
+def _init_pycuda():
+    """
+    Lazily initialize PyCUDA context and compile CUDA kernel.
+    This is called only when MOCU() is actually used, not on module import.
+    """
+    global _pycuda_initialized, _mod, _task, _drv
+    
+    if _pycuda_initialized:
+        return
+    
+    # Now import PyCUDA (this will initialize CUDA context)
+    import pycuda.autoinit
+    import pycuda.driver as drv
+    from pycuda.compiler import SourceModule
+    
+    _drv = drv
+    
+    # Compile CUDA kernel
+    _mod = SourceModule("""
 
 // This should be manually changed due to the technical issue in the PyCUDA.
 // Well, yes, I am lazy...
@@ -290,11 +313,26 @@ __global__ void task(double *a, double *random_data, double *a_save, double *w, 
 
 """
                    )
+    
+    _task = _mod.get_function("task")
+    _pycuda_initialized = True
 
-task = mod.get_function("task")
+
+# Note: The CUDA kernel code above is compiled lazily when _init_pycuda() is called
 
 
 def MOCU(K_max, w, N, h, M, T, aLowerBoundIn, aUpperBoundIn, seed):
+    """
+    Compute MOCU using CUDA-accelerated Monte Carlo sampling.
+    
+    IMPORTANT: This function initializes PyCUDA context on first call.
+    If you're using MPNN predictor, this function should NEVER be called
+    (use predictor_utils.predict_mocu() instead).
+    """
+    # Lazy initialization: Only initialize PyCUDA when MOCU is actually called
+    # This prevents CUDA context conflicts with PyTorch when using MPNN predictor
+    _init_pycuda()
+    
     # seed = 0
     # Validate and adjust block configuration
     blocks = 128
@@ -341,25 +379,25 @@ def MOCU(K_max, w, N, h, M, T, aLowerBoundIn, aUpperBoundIn, seed):
 
     # Add error handling for CUDA kernel launch
     try:
-        task(drv.In(a), drv.In(rand_data), drv.Out(a_save), drv.In(w),
-             np.float64(h), np.intc(N), np.intc(M), drv.In(vec_a_lower),
-             drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
-    except drv.LogicError as e:
+        _task(_drv.In(a), _drv.In(rand_data), _drv.Out(a_save), _drv.In(w),
+             np.float64(h), np.intc(N), np.intc(M), _drv.In(vec_a_lower),
+             _drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
+    except _drv.LogicError as e:
         # CUDA context or resource error - try to recover
         error_msg = str(e)
         if "cuFuncSetBlockShape" in error_msg or "invalid resource handle" in error_msg:
             # Clear CUDA context and retry once
             try:
                 # Try to get current context and reset if possible
-                ctx = drv.Context.get_current()
+                ctx = _drv.Context.get_current()
                 if ctx is not None:
                     ctx.pop()
                     ctx.push()
                 
                 # Retry with same configuration
-                task(drv.In(a), drv.In(rand_data), drv.Out(a_save), drv.In(w),
-                     np.float64(h), np.intc(N), np.intc(M), drv.In(vec_a_lower),
-                     drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
+                _task(_drv.In(a), _drv.In(rand_data), _drv.Out(a_save), _drv.In(w),
+                     np.float64(h), np.intc(N), np.intc(M), _drv.In(vec_a_lower),
+                     _drv.In(vec_a_upper), grid=(blocks, 1), block=(block_size, 1, 1))
             except Exception as retry_error:
                 raise RuntimeError(
                     f"CUDA kernel launch failed: {error_msg}. "

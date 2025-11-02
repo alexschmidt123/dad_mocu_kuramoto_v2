@@ -377,7 +377,14 @@ class SamplingBasedMOCU:
             K_max: Number of Monte Carlo samples
             h: Time step for RK4 integration
             T: Time horizon
+        
+        NOTE: MOCU is imported lazily here (inside __init__) to avoid
+        initializing PyCUDA context when this class is defined (module import).
+        PyCUDA context is only created when an instance is actually created.
         """
+        # LAZY IMPORT: Only import MOCU when an instance is created
+        # This prevents PyCUDA context initialization during module import
+        # Import happens here, not at module level
         from ..core.mocu_cuda import MOCU
         self.MOCU = MOCU
         self.K_max = K_max
