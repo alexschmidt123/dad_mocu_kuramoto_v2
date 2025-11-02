@@ -3,7 +3,15 @@ Train DAD (Deep Adaptive Design) policy network using imitation learning or RL.
 
 This script trains a policy network to minimize terminal MOCU through sequential
 experimental design decisions.
+
+CRITICAL: MOCU_BACKEND must be set before any imports to prevent PyCUDA conflicts.
 """
+
+# CRITICAL: Set MOCU_BACKEND BEFORE any other imports to prevent PyCUDA from loading
+import os
+if os.getenv('MOCU_BACKEND') != 'torch':
+    # Auto-set to torch for DAD training (always uses PyTorch, PyCUDA would segfault)
+    os.environ['MOCU_BACKEND'] = 'torch'
 
 import sys
 from pathlib import Path

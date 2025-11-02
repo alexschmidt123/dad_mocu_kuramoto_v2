@@ -65,9 +65,33 @@ def _init_pycuda():
         pass  # PyTorch not available, continue normally
     
     # Safe to initialize PyCUDA (PyTorch is not active)
-    import pycuda.autoinit
-    import pycuda.driver as drv
-    from pycuda.compiler import SourceModule
+    # CRITICAL: Import PyCUDA modules one at a time to catch any issues early
+    try:
+        import pycuda.autoinit
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to import pycuda.autoinit: {e}. "
+            f"This may indicate a CUDA context conflict. "
+            f"Ensure PyTorch CUDA is not active before calling MOCU()."
+        ) from e
+    
+    try:
+        import pycuda.driver as drv
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to import pycuda.driver: {e}. "
+            f"This may indicate a CUDA context conflict. "
+            f"Ensure PyTorch CUDA is not active before calling MOCU()."
+        ) from e
+    
+    try:
+        from pycuda.compiler import SourceModule
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to import pycuda.compiler: {e}. "
+            f"This may indicate a CUDA context conflict. "
+            f"Ensure PyTorch CUDA is not active before calling MOCU()."
+        ) from e
     
     _drv = drv
     
