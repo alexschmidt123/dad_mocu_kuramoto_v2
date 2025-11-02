@@ -35,24 +35,36 @@ def _init_pycuda():
     if _pycuda_initialized:
         return
     
-    # Check if PyTorch CUDA is active - if so, warn and use autoinit anyway
-    # (This should rarely happen as DAD training uses MPNN predictor, not PyCUDA)
+    # CRITICAL SAFETY CHECK: Refuse to initialize PyCUDA if PyTorch CUDA is active
+    # This prevents segmentation faults
+    import os
+    
+    # Check environment variable first
+    backend_mode = os.getenv('MOCU_BACKEND', 'auto')
+    if backend_mode == 'torch':
+        raise RuntimeError(
+            "PyCUDA initialization blocked: MOCU_BACKEND=torch is set. "
+            "PyCUDA cannot safely share PyTorch's CUDA context and will cause segmentation faults. "
+            "Use mocu_torch backend instead. "
+            "This function should not be called when PyTorch CUDA is active."
+        )
+    
+    # Check if PyTorch CUDA is active
     try:
         import torch
         if torch.cuda.is_available():
-            # WARNING: PyTorch CUDA context exists - PyCUDA will create conflict
-            # This is why DAD training should use MPNN predictor (--use-predicted-mocu)
-            import warnings
-            warnings.warn(
-                "PyCUDA initialization detected while PyTorch CUDA is active. "
-                "This may cause segmentation faults. "
-                "For DAD training, use --use-predicted-mocu flag to use MPNN predictor instead.",
-                RuntimeWarning
+            # PyTorch CUDA is active - REFUSE to initialize PyCUDA (will cause segfault)
+            raise RuntimeError(
+                "PyCUDA initialization blocked: PyTorch CUDA context is active. "
+                "PyCUDA cannot safely share PyTorch's CUDA context and will cause segmentation faults. "
+                "For DAD training, use --use-predicted-mocu flag to use MPNN predictor instead. "
+                "Or set MOCU_BACKEND=torch to use PyTorch-based MOCU computation. "
+                "This function should not be called when PyTorch CUDA is active."
             )
     except ImportError:
         pass  # PyTorch not available, continue normally
     
-    # Initialize PyCUDA (will create its own context, but warned user above)
+    # Safe to initialize PyCUDA (PyTorch is not active)
     import pycuda.autoinit
     import pycuda.driver as drv
     from pycuda.compiler import SourceModule

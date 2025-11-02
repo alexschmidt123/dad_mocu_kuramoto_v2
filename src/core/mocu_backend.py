@@ -5,6 +5,9 @@ This module prevents PyCUDA/PyTorch conflicts by:
 1. Checking if PyTorch CUDA is already active
 2. If YES → use PyTorch implementation (safe)
 3. If NO → use PyCUDA implementation (fast)
+
+CRITICAL: When MOCU_BACKEND=torch is set, PyCUDA will NEVER be imported,
+even if someone tries to import mocu_cuda directly.
 """
 
 import os
