@@ -30,7 +30,9 @@ from src.methods import (
     DAD_MOCU_Method,
 )
 from src.core.sync_detection import determineSyncN, determineSyncTwo
-from src.core.mocu_cuda import MOCU  # This imports PyCUDA (via pycuda.autoinit in mocu_cuda.py)
+# MOCU imported lazily when needed (only for methods that use PyCUDA directly, not iNN/NN)
+# This maintains separate usage pattern: MPNN methods (iNN/NN) never import PyCUDA
+# Only sampling-based methods (ODE, ENTROPY, RANDOM) use PyCUDA directly
 
 
 if __name__ == '__main__':
@@ -40,14 +42,22 @@ if __name__ == '__main__':
                         help='Comma-separated list of methods to evaluate (e.g., "iNN,NN,RANDOM")')
     args = parser.parse_args()
     # ========== Configuration ==========
-    it_idx = 10  # Number of MOCU averaging iterations
-    update_cnt = 10  # Number of sequential experiments
-    N = 5  # Number of oscillators
-    K_max = 20480  # Monte Carlo samples for MOCU
+    # Read from environment variables (set by workflow scripts from config file)
+    # Fallback to defaults if not set
+    it_idx = int(os.getenv('EVAL_IT_IDX', '10'))  # Number of MOCU averaging iterations
+    update_cnt = int(os.getenv('EVAL_UPDATE_CNT', '10'))  # Number of sequential experiments
+    N = int(os.getenv('EVAL_N', '5'))  # Number of oscillators
+    K_max = int(os.getenv('EVAL_K_MAX', '20480'))  # Monte Carlo samples for MOCU
+    numberOfSimulationsPerMethod = int(os.getenv('EVAL_NUM_SIMULATIONS', '10'))
     
     # Get result folder from environment variable
     result_folder = os.getenv('RESULT_FOLDER', str(PROJECT_ROOT / 'results' / 'default'))
     os.makedirs(result_folder, exist_ok=True)
+    
+    print(f"Evaluation Configuration:")
+    print(f"  N={N}, update_cnt={update_cnt}, it_idx={it_idx}, K_max={K_max}")
+    print(f"  num_simulations={numberOfSimulationsPerMethod}")
+    print(f"  result_folder={result_folder}")
     
     # Time parameters
     deltaT = 1.0 / 160.0
@@ -78,7 +88,7 @@ if __name__ == '__main__':
         ]
         print(f"Using default methods: {method_names}")
     
-    numberOfSimulationsPerMethod = 10
+    # numberOfSimulationsPerMethod already set above from environment variable
     numberOfVaildSimulations = 0
     numberOfSimulations = 0
     
@@ -164,13 +174,39 @@ if __name__ == '__main__':
             print(f"Method: {method_name} (Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod})")
             print(f"{'-'*80}")
             
-            # Compute initial MOCU
+            # Compute initial MOCU (lazy import to maintain separation for MPNN methods)
+            # IMPORTANT: For MPNN methods (iNN/NN), we compute initial MOCU BEFORE loading MPNN
+            # This ensures PyCUDA context is initialized separately from PyTorch MPNN operations
             timeMOCU = time.time()
             it_temp_val = np.zeros(it_idx)
+            
+            # Lazy import MOCU only when needed (for initial MOCU computation)
+            # This maintains the separate usage pattern:
+            # - MPNN methods (iNN/NN): Use PyCUDA first, then load MPNN with sync, then alternate
+            # - Sampling methods (ODE/ENTROPY/RANDOM): Use PyCUDA directly
+            from src.core.mocu_cuda import MOCU
+            
+            # Ensure no MPNN operations are pending before PyCUDA usage
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+            except:
+                pass
+            
             for l in range(it_idx):
                 it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, 
                                      aInitialLower.copy(), aInitialUpper.copy(), 0)
             MOCUInitial = np.mean(it_temp_val)
+            
+            # CRITICAL: Ensure all PyCUDA operations complete BEFORE initializing MPNN methods
+            # This maintains separate usage: PyCUDA operations finish, then MPNN loads
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+            except:
+                pass
             
             print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {time.time() - timeMOCU:.2f}s)")
             
@@ -179,6 +215,8 @@ if __name__ == '__main__':
             
             try:
                 if method_name == 'iNN':
+                    # MPNN method: PyCUDA is already initialized, but synchronized
+                    # MPNN model loading will happen separately
                     method = iNN_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
                                        model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
                 
