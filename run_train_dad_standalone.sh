@@ -76,6 +76,9 @@ echo
 # Set environment variable for MPNN model name
 export MOCU_MODEL_NAME="$MODEL_NAME"
 
+# Force PyTorch backend for safety (PyTorch is active during DAD training)
+export MOCU_BACKEND=torch
+
 # Determine if we should use MPNN predictor
 USE_PREDICTED_MOCU=""
 if [ "$DAD_METHOD" = "reinforce" ] && [ -f "$MODEL_PATH" ]; then
