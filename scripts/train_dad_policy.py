@@ -225,6 +225,11 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     # This matches the original paper's pattern: separate usage of MPNN and PyCUDA
     from scripts.generate_dad_data import perform_experiment, update_bounds
     
+    # Import predict_mocu at function level if using MPNN (not inside the loop)
+    # This avoids repeated imports that could cause issues
+    if use_predicted_mocu and mocu_model is not None:
+        from src.models.predictors.predictor_utils import predict_mocu
+    
     model.train()
     total_loss = 0
     total_reward = 0
@@ -345,7 +350,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
             
-            from src.models.predictors.predictor_utils import predict_mocu
+            # Use predict_mocu (already imported at function level)
             terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
             
             # Ensure MPNN prediction is complete before continuing
@@ -491,13 +496,31 @@ def main():
             # Get K_max from config or use default
             K_max = config.get('K_max', 20480)
             
-            # Optionally use MPNN predictor for fast MOCU prediction
-            # IMPORTANT: Ensure any previous PyCUDA context is cleared before loading MPNN
-            # This ensures clean separation between PyCUDA and PyTorch/cuDNN usage
+            # CRITICAL: REINFORCE training MUST use MPNN predictor when PyTorch is active
+            # PyCUDA cannot safely share PyTorch's CUDA context - will cause segmentation fault
+            # MPNN predictor is REQUIRED (not optional) for DAD training
             mocu_model = None
             mocu_mean = None
             mocu_std = None
-            use_predicted_mocu = args.use_predicted_mocu
+            
+            # For REINFORCE, MPNN predictor is REQUIRED (PyCUDA causes segfault with PyTorch)
+            # Auto-enable if not explicitly disabled
+            use_predicted_mocu = args.use_predicted_mocu if args.use_predicted_mocu else True
+            
+            # If user explicitly disabled MPNN, this will segfault - warn and allow for testing
+            if not use_predicted_mocu:
+                import warnings
+                warnings.warn(
+                    "WARNING: Running REINFORCE without MPNN predictor (direct PyCUDA). "
+                    "This WILL cause segmentation fault when PyTorch CUDA context is active. "
+                    "Please use --use-predicted-mocu or train MPNN predictor first.",
+                    RuntimeWarning
+                )
+                print("\n" + "!"*80)
+                print("WARNING: Direct PyCUDA MOCU computation will likely cause segmentation fault")
+                print("         when PyTorch CUDA context is active!")
+                print("         Recommendation: Use --use-predicted-mocu flag")
+                print("!"*80 + "\n")
             if use_predicted_mocu:
                 try:
                     # Ensure CUDA is in a clean state before loading MPNN predictor
@@ -507,9 +530,36 @@ def main():
                         torch.cuda.empty_cache()
                     
                     from src.models.predictors.predictor_utils import load_mpnn_predictor
-                    # Get model name from environment variable (set by run.sh) or config, or use default
                     import os
-                    model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name') or f'cons{N}'
+                    import re
+                    from pathlib import Path
+                    
+                    # Get model name from environment variable, config, or auto-detect from output_dir
+                    model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name')
+                    
+                    # Auto-detect from output_dir if not provided (e.g., models/fast_config/11012025_212842/)
+                    if not model_name and args.output_dir:
+                        output_path = Path(args.output_dir).resolve()
+                        parts = output_path.parts
+                        # Look for pattern: .../models/{config}/{timestamp}/
+                        try:
+                            models_idx = list(parts).index('models')
+                            if models_idx + 2 < len(parts):
+                                config_part = parts[models_idx + 1]  # config name
+                                timestamp_part = parts[models_idx + 2]  # timestamp
+                                # Check if timestamp matches format (MMDDYYYY_HHMMSS)
+                                if re.match(r'\d{8}_\d{6}', timestamp_part):
+                                    model_name = f"{config_part}_{timestamp_part}"
+                                    print(f"[REINFORCE] Auto-detected model name from output_dir: {model_name}")
+                        except (ValueError, IndexError):
+                            pass  # Couldn't parse path, will try default
+                    
+                    # Last resort: try default name format
+                    if not model_name:
+                        model_name = f'cons{N}'
+                        print(f"[REINFORCE] Using default model name: {model_name}")
+                    
+                    print(f"[REINFORCE] Attempting to load MPNN predictor: {model_name}")
                     mocu_model, mocu_mean, mocu_std = load_mpnn_predictor(model_name=model_name, device=str(device))
                     
                     # Ensure model is properly moved to device and in eval mode
@@ -551,16 +601,36 @@ def main():
                     
                     print(f"[REINFORCE] Using MPNN predictor '{model_name}' for fast MOCU estimation")
                 except FileNotFoundError as e:
-                    print(f"[REINFORCE] Warning: {e}")
-                    print(f"[REINFORCE] Falling back to direct CUDA MOCU computation (slow)")
-                    use_predicted_mocu = False
+                    print(f"\n" + "!"*80)
+                    print(f"[REINFORCE] ERROR: MPNN predictor not found!")
+                    print(f"[REINFORCE] {e}")
+                    print(f"\n[REINFORCE] REINFORCE training requires MPNN predictor to avoid segmentation faults.")
+                    print(f"[REINFORCE] PyCUDA cannot be used when PyTorch CUDA context is active.")
+                    print(f"\n[REINFORCE] Solutions:")
+                    print(f"  1. Train MPNN predictor first: bash scripts/bash/step2_train_mpnn.sh configs/fast_config.yaml")
+                    print(f"  2. Or set MOCU_MODEL_NAME environment variable: export MOCU_MODEL_NAME='{model_name}'")
+                    print(f"  3. Or ensure MPNN model exists in: models/{model_name.split('_')[0]}/")
+                    print(f"!"*80 + "\n")
+                    raise RuntimeError(
+                        f"MPNN predictor is REQUIRED for REINFORCE training. "
+                        f"Model '{model_name}' not found. "
+                        f"Direct PyCUDA MOCU computation will cause segmentation fault "
+                        f"when PyTorch CUDA context is active. "
+                        f"Please train MPNN predictor first or provide correct MOCU_MODEL_NAME."
+                    ) from e
                 except Exception as e:
-                    print(f"[REINFORCE] Error loading MPNN predictor: {e}")
+                    print(f"\n" + "!"*80)
+                    print(f"[REINFORCE] ERROR: Failed to load MPNN predictor!")
+                    print(f"[REINFORCE] {e}")
+                    print(f"\n[REINFORCE] REINFORCE training requires MPNN predictor to avoid segmentation faults.")
+                    print(f"!"*80 + "\n")
                     import traceback
                     traceback.print_exc()
-                    print(f"[REINFORCE] Falling back to direct CUDA MOCU computation (slow)")
-                    use_predicted_mocu = False
-                    mocu_model = None
+                    raise RuntimeError(
+                        f"MPNN predictor is REQUIRED for REINFORCE training. "
+                        f"Failed to load MPNN predictor '{model_name}'. "
+                        f"Please check model path and train MPNN first."
+                    ) from e
             
             loss, reward = train_reinforce(
                 model, trajectories, optimizer, device, N, 

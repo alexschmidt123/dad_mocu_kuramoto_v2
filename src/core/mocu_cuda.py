@@ -23,13 +23,36 @@ def _init_pycuda():
     """
     Lazily initialize PyCUDA context and compile CUDA kernel.
     This is called only when MOCU() is actually used, not on module import.
+    
+    CRITICAL: PyCUDA cannot share PyTorch's CUDA context safely.
+    The original paper runs PyCUDA and PyTorch in SEPARATE processes.
+    
+    For DAD training, we should NEVER use PyCUDA directly - use MPNN predictor instead.
+    This function is only for ODE method and data generation where PyTorch is not active.
     """
     global _pycuda_initialized, _mod, _task, _drv
     
     if _pycuda_initialized:
         return
     
-    # Now import PyCUDA (this will initialize CUDA context)
+    # Check if PyTorch CUDA is active - if so, warn and use autoinit anyway
+    # (This should rarely happen as DAD training uses MPNN predictor, not PyCUDA)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # WARNING: PyTorch CUDA context exists - PyCUDA will create conflict
+            # This is why DAD training should use MPNN predictor (--use-predicted-mocu)
+            import warnings
+            warnings.warn(
+                "PyCUDA initialization detected while PyTorch CUDA is active. "
+                "This may cause segmentation faults. "
+                "For DAD training, use --use-predicted-mocu flag to use MPNN predictor instead.",
+                RuntimeWarning
+            )
+    except ImportError:
+        pass  # PyTorch not available, continue normally
+    
+    # Initialize PyCUDA (will create its own context, but warned user above)
     import pycuda.autoinit
     import pycuda.driver as drv
     from pycuda.compiler import SourceModule
