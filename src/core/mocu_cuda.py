@@ -41,28 +41,37 @@ def _init_pycuda():
     
     # Check environment variable first
     backend_mode = os.getenv('MOCU_BACKEND', 'auto')
-    if backend_mode == 'torch':
+    
+    # If user explicitly set MOCU_BACKEND=pycuda, allow it (they know what they're doing)
+    # This is needed for data generation scripts that run before PyTorch is used
+    if backend_mode == 'pycuda':
+        # User explicitly requested PyCUDA - allow it even if PyTorch is imported
+        # (PyTorch may be imported but CUDA context not yet initialized)
+        pass  # Continue with PyCUDA initialization
+    elif backend_mode == 'torch':
+        # User explicitly requested torch backend - refuse PyCUDA
         raise RuntimeError(
             "PyCUDA initialization blocked: MOCU_BACKEND=torch is set. "
             "PyCUDA cannot safely share PyTorch's CUDA context and will cause segmentation faults. "
             "Use mocu_torch backend instead. "
             "This function should not be called when PyTorch CUDA is active."
         )
-    
-    # Check if PyTorch CUDA is active
-    try:
-        import torch
-        if torch.cuda.is_available():
-            # PyTorch CUDA is active - REFUSE to initialize PyCUDA (will cause segfault)
-            raise RuntimeError(
-                "PyCUDA initialization blocked: PyTorch CUDA context is active. "
-                "PyCUDA cannot safely share PyTorch's CUDA context and will cause segmentation faults. "
-                "For DAD training, use --use-predicted-mocu flag to use MPNN predictor instead. "
-                "Or set MOCU_BACKEND=torch to use PyTorch-based MOCU computation. "
-                "This function should not be called when PyTorch CUDA is active."
-            )
-    except ImportError:
-        pass  # PyTorch not available, continue normally
+    else:
+        # Auto mode - check if PyTorch CUDA is active
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # PyTorch CUDA is active - REFUSE to initialize PyCUDA (will cause segfault)
+                raise RuntimeError(
+                    "PyCUDA initialization blocked: PyTorch CUDA context is active. "
+                    "PyCUDA cannot safely share PyTorch's CUDA context and will cause segmentation faults. "
+                    "For DAD training, use --use-predicted-mocu flag to use MPNN predictor instead. "
+                    "Or set MOCU_BACKEND=torch to use PyTorch-based MOCU computation. "
+                    "Or set MOCU_BACKEND=pycuda to force PyCUDA (use only if PyTorch CUDA context not initialized). "
+                    "This function should not be called when PyTorch CUDA is active."
+                )
+        except ImportError:
+            pass  # PyTorch not available, continue normally
     
     # Safe to initialize PyCUDA (PyTorch is not active)
     # CRITICAL: Import PyCUDA modules one at a time to catch any issues early

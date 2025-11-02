@@ -20,12 +20,17 @@ def get_backend_mode():
         'pycuda' or 'torch'
     """
     # Option 1: User explicitly sets environment variable (CHECKED FIRST!)
+    # CRITICAL: If user explicitly sets MOCU_BACKEND, respect it without checking torch
+    # This allows PyCUDA to initialize even if torch was imported elsewhere
     mode = os.getenv('MOCU_BACKEND', 'auto')
     
     if mode != 'auto':
-        return mode  # User choice overrides everything
+        # User explicitly chose a backend - respect it
+        # Don't check torch - user knows what they want
+        return mode
     
-    # Option 2: Auto-detect what's safe
+    # Option 2: Auto-detect what's safe (only if MOCU_BACKEND not set)
+    # CRITICAL: Lazy import torch to avoid initializing CUDA context during import
     try:
         import torch
         # Check if PyTorch has been imported and CUDA is available
