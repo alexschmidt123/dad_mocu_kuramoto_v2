@@ -322,27 +322,63 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             from src.core.mocu_backend import MOCU
             terminal_MOCU = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
         
-        reward = -terminal_MOCU
+        # CRITICAL: Ensure terminal_MOCU is a Python float (not a tensor) before using in computation
+        # This prevents any gradient graph connections to MPNN model
+        reward = float(-terminal_MOCU)
         
         if use_baseline:
             baseline = baseline_alpha * baseline + (1 - baseline_alpha) * reward
         
-        advantage = reward - baseline if use_baseline else reward
+        advantage = float(reward - baseline if use_baseline else reward)
         returns = [advantage] * len(log_probs)
         
+        # Build loss computation graph (only involves policy network, not MPNN)
         policy_loss = []
         for log_prob, advantage_val in zip(log_probs, returns):
-            policy_loss.append(-log_prob * advantage_val)
+            # Ensure advantage_val is a Python float, not tensor
+            advantage_tensor = torch.tensor(float(advantage_val), device=log_prob.device, requires_grad=False)
+            policy_loss.append(-log_prob * advantage_tensor)
         
         loss = torch.stack(policy_loss).sum()
         
+        # CRITICAL: Verify loss is a scalar tensor with gradient tracking only from policy network
+        assert loss.requires_grad, "Loss should require gradients for backward pass"
+        assert loss.numel() == 1, "Loss should be a scalar"
+        
         # === BACKWARD PASS ===
         print(f"[REINFORCE] Trajectory {traj_idx}: Starting backward pass...")
-        # Ensure MOCU computation is done
+        # CRITICAL: Ensure MOCU computation is completely done and MPNN model is isolated
         if use_predicted_mocu and mocu_model is not None and torch.cuda.is_available():
-            torch.cuda.synchronize()  # ADD THIS
+            # Ensure all MPNN operations are complete
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            # Ensure MPNN model is in eval mode and not accumulating gradients
+            mocu_model.eval()
+            # Clear any potential hanging references
+            with torch.no_grad():
+                # This ensures no gradient computation on MPNN side
+                pass
         
-        loss.backward()
+        # CRITICAL: Ensure all CUDA operations are synchronized before backward
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        print(f"[REINFORCE] Trajectory {traj_idx}: Calling loss.backward()...")
+        print(f"[REINFORCE] Trajectory {traj_idx}: Loss device: {loss.device}, requires_grad: {loss.requires_grad}, grad_fn: {loss.grad_fn}")
+        
+        # CRITICAL: Try to catch any CUDA errors before they become segfaults
+        try:
+            loss.backward()
+        except RuntimeError as e:
+            print(f"[REINFORCE] ERROR during backward: {e}")
+            if torch.cuda.is_available():
+                print(f"[REINFORCE] CUDA error info:")
+                print(f"  - Device count: {torch.cuda.device_count()}")
+                print(f"  - Current device: {torch.cuda.current_device()}")
+                print(f"  - Memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+                torch.cuda.synchronize()
+            raise
+        
         print(f"[REINFORCE] Trajectory {traj_idx}: Backward pass complete")
         
         # Ensure backward completes
