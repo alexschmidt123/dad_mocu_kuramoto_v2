@@ -53,29 +53,11 @@ echo "  N_global: $N_GLOBAL"
 echo "  Methods to evaluate: $METHODS"
 echo ""
 
-# Step 0: Check and update N_global in CUDA code
-echo -e "${GREEN}[Step 0/5]${NC} Checking CUDA N_global configuration..."
-CUDA_FILE="src/core/mocu_cuda.py"
-CURRENT_N_GLOBAL=$(grep "#define N_global" $CUDA_FILE | awk '{print $3}')
+# Step 0: Verify configuration
+echo -e "${GREEN}[Step 0/5]${NC} Verifying configuration..."
+echo -e "${GREEN}✓${NC} Configuration loaded: N=$N_GLOBAL"
 
-if [ "$CURRENT_N_GLOBAL" != "$N_GLOBAL" ]; then
-    if [ -z "$N_GLOBAL_UPDATED" ]; then
-        echo -e "${YELLOW}Updating N_global from $CURRENT_N_GLOBAL to $N_GLOBAL...${NC}"
-        sed -i.bak "s/#define N_global.*/#define N_global $N_GLOBAL/" $CUDA_FILE
-        echo -e "${GREEN}✓${NC} N_global updated successfully"
-        echo -e "${BLUE}Re-executing script to apply changes...${NC}"
-        echo ""
-        export N_GLOBAL_UPDATED=1
-        exec bash "$0" "$@"
-    else
-        echo -e "${RED}Error: N_global mismatch after update. Please check $CUDA_FILE${NC}"
-        exit 1
-    fi
-else
-    echo -e "${GREEN}✓${NC} N_global is correctly set to $N_GLOBAL"
-fi
-
-# Step 1: Generate MPNN data (runs in separate process - uses PyCUDA)
+# Step 1: Generate MPNN data (uses PyTorch CUDA acceleration)
 echo ""
 echo -e "${GREEN}[Step 1/5]${NC} Generating MPNN training data..."
 bash "${PROJECT_ROOT}/scripts/bash/step1_generate_mocu_data.sh" "$CONFIG_FILE"
@@ -86,7 +68,7 @@ echo ""
 echo -e "${GREEN}[Step 2/5]${NC} Training MPNN predictor..."
 bash "${PROJECT_ROOT}/scripts/bash/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
 
-# Step 3: Train DAD policy (runs in separate process - uses MPNN predictor only, no PyCUDA)
+# Step 3: Train DAD policy (uses MPNN predictor for MOCU estimation)
 if echo "$METHODS" | grep -q "DAD"; then
     echo ""
     echo -e "${GREEN}[Step 3/5]${NC} Training DAD policy..."
@@ -96,7 +78,7 @@ else
     echo -e "${BLUE}[Step 3/5]${NC} Skipping DAD training (not in methods list)"
 fi
 
-# Step 4: Evaluate methods (runs in separate process - may use PyCUDA for evaluation)
+# Step 4: Evaluate methods (uses PyTorch CUDA for MOCU computation)
 echo ""
 echo -e "${GREEN}[Step 4/5]${NC} Running evaluation..."
 bash "${PROJECT_ROOT}/scripts/bash/step4_evaluate.sh" "$CONFIG_FILE"

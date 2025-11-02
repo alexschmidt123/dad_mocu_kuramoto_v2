@@ -6,10 +6,10 @@ This repository implements MOCU-OED framework using neural message passing to ac
 
 ## Environment Requirements
 
-- **OS**: Linux (Ubuntu 22.04+)
+- **OS**: Linux (Ubuntu 22.04+), macOS, or Windows
 - **Python**: 3.10
-- **GPU**: NVIDIA GPU with CUDA 12.1+
-- **Hardware**: Tested on GeForce RTX 4080 
+- **GPU**: NVIDIA GPU with CUDA 12.1+ (for CUDA acceleration)
+- **Hardware**: Tested on GeForce RTX 4080
 
 ## Installation
 
@@ -20,24 +20,16 @@ conda create -n mocu python=3.10
 conda activate mocu
 ```
 
-### 2. Install CUDA Toolkit
+### 2. Install CUDA Toolkit (for GPU acceleration)
 
 ```bash
 conda install -c nvidia cuda-toolkit=12.1
 nvcc --version
 ```
 
-### 3. Install PyCUDA
+**Note**: CPU-only mode is supported but significantly slower.
 
-```bash
-# System dependencies (Ubuntu/Debian)
-sudo apt-get install -y build-essential python3-dev libboost-python-dev libboost-thread-dev
-
-# PyCUDA
-pip install pycuda
-```
-
-### 4. Install PyTorch & PyTorch Geometric
+### 3. Install PyTorch & PyTorch Geometric
 
 ```bash
 # PyTorch with CUDA 12.1
@@ -48,7 +40,7 @@ pip install torch-geometric==2.6.1
 pip install torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
-### 5. Install Dependencies
+### 4. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -91,15 +83,19 @@ dad_mocu_kuramoto_v2/
 │   │
 │   ├── models/                     # Neural network models
 │   │   ├── predictors/            # MOCU prediction models
-│   │   │   ├── predictors.py       # Unified: MLP, CNN, MPNN+, Sampling, Ensemble
-│   │   │   ├── legacy_baselines.py # Original CNN/MLP (2023 paper)
-│   │   │   ├── legacy_mpnn.py     # Original MPNN training (2023 paper)
-│   │   │   └── predictor_utils.py  # Utility functions for predictor loading
+│   │   │   ├── mlp.py             # MLP baseline
+│   │   │   ├── cnn.py             # CNN baseline
+│   │   │   ├── mpnn.py            # Basic MPNN
+│   │   │   ├── mpnn_plus.py       # MPNN+ (winner)
+│   │   │   ├── ensemble.py        # Ensemble predictor
+│   │   │   ├── sampling_mocu.py  # Ground truth (sampling)
+│   │   │   ├── utils.py           # Shared utilities
+│   │   │   └── predictor_utils.py # Predictor loading utilities
 │   │   └── policy_networks.py     # DAD policy network
 │   │
 │   ├── core/                       # Core computation
-│   │   ├── mocu_cuda.py           # CUDA-accelerated MOCU
-│   │   └── sync_detection.py
+│   │   ├── mocu.py                 # PyTorch CUDA-accelerated MOCU computation
+│   │   └── sync_detection.py      # Synchronization detection
 │   │
 │   └── utils/
 │       └── utils.py
@@ -112,47 +108,36 @@ dad_mocu_kuramoto_v2/
 
 ## Quick Start
 
-### Super Quick Test (< 1 minute) ⚡⚡
+### Full Workflow (Automated)
 
-Test core functionality without training (no model needed):
+Run the complete experiment pipeline for a specific configuration:
 
 ```bash
 conda activate mocu
-python quick_test.py
+bash run.sh configs/fast_config.yaml
 ```
 
-This tests:
-- ✓ MOCU computation works
-- ✓ RANDOM method works (no model needed)
-- ✓ Code structure is correct
+This will:
+1. Generate MPNN training data
+2. Train MPNN predictor
+3. Train DAD policy (if DAD method is enabled)
+4. Evaluate all methods
+5. Generate visualizations
 
 ### Component Verification (3-5 minutes) ⚡
 
-Quickly test if all components work (minimal data, NOT for actual experiments):
+Quickly test if all components work:
 
 ```bash
-# Option 1: Automated (using run.sh)
 conda activate mocu
 bash run.sh configs/fast_config.yaml
-
-# Option 2: Manual steps
-conda activate mocu
-
-# Step 1: Generate minimal data
-python scripts/generate_mocu_data.py --N 5 --samples_per_type 150 --K_max 1024 --train_size 100
-
-# Step 2: Train for 10 epochs
-python scripts/train_predictor.py --data_path ./data/ --name fast_test --epochs 10
-
-# Step 3: Test with trained model
-python quick_test.py
 ```
 
 | Step | Time | What it does |
 |------|------|--------------|
-| Data Generation | ~2 min | 300 samples → ~150 valid (after sync filtering) |
-| Training | ~1 min | 10 epochs on ~100 samples |
-| Testing | ~30 sec | Test RANDOM + iNN methods |
+| Data Generation | ~2 min | Generate MPNN training data |
+| Training | ~1 min | Train MPNN predictor |
+| Evaluation | ~1 min | Test all OED methods |
 | Visualization | ~5 sec | Generate plots (optional) |
 
 ### Full Experiments
@@ -174,12 +159,12 @@ bash run.sh configs/N9_config.yaml
 
 ### Level 1: MOCU Prediction
 
-**Location**: `src/models/predictors/predictors.py`
+**Location**: `src/models/predictors/`
 
 Predict MOCU values from coupling bounds:
 - **MLP**, **CNN** - Baseline neural networks
-- **MPNN+** - Message Passing NN with ranking constraint
-- **Sampling-based** - Ground truth (Monte Carlo)
+- **MPNN+** - Message Passing NN with ranking constraint (winner)
+- **Sampling-based** - Ground truth (Monte Carlo with PyTorch CUDA)
 - **Ensemble** - Combine multiple models
 
 **Evaluate predictors**:
@@ -199,7 +184,7 @@ This compares all predictors on:
 Select next experiment to minimize terminal MOCU:
 - **iNN** - Iterative MPNN (re-compute each step)
 - **NN** - Static MPNN (compute once)
-- **ODE**, **iODE** - Sampling-based (exact but slow)
+- **ODE**, **iODE** - Sampling-based (exact but slow, uses PyTorch CUDA)
 - **ENTROPY** - Greedy uncertainty heuristic
 - **RANDOM** - Random baseline
 - **DAD-MOCU** ⭐ - Deep Adaptive Design (learned policy)
@@ -241,7 +226,7 @@ python scripts/generate_mocu_data.py --N 5 --samples_per_type 37500
 python scripts/train_predictor.py --data_path ./data/ --name cons5
 ```
 
-**Note**: Sampling-based methods (ODE, iODE) don't need training - they compute MOCU directly.
+**Note**: Sampling-based methods (ODE, iODE) don't need training - they compute MOCU directly using PyTorch CUDA acceleration.
 
 ### 2. Train DAD Policy (Optional)
 
@@ -250,7 +235,7 @@ python scripts/train_predictor.py --data_path ./data/ --name cons5
 python scripts/generate_dad_data.py --N 5 --num_episodes 1000 --expert_method iNN
 
 # Train DAD policy network
-python scripts/train_dad_policy.py --data_path ./data/dad_training_data/ --name dad_policy_N5
+python scripts/train_dad_policy.py --data_path ./data/dad_training_data/ --name dad_policy_N5 --method reinforce
 ```
 
 ### 3. Evaluate All Methods
@@ -309,7 +294,7 @@ Add your new method to the comparison:
 python scripts/generate_dad_data.py --N 5 --num_episodes 1000
 
 # Train DAD policy
-python scripts/train_dad_policy.py --data_path ./data/dad_training_data/
+python scripts/train_dad_policy.py --data_path ./data/dad_training_data/ --method reinforce
 
 # Evaluate with DAD included
 python scripts/evaluate.py  # DAD is already in method list
@@ -319,11 +304,33 @@ python scripts/evaluate.py  # DAD is already in method list
 
 ## Key Features
 
-✅ **Two-level structure**: Clear separation between MOCU prediction and OED selection
-✅ **Unified interface**: All methods inherit from `OEDMethod` base class
-✅ **Modular design**: Easy to add new methods and predictors
-✅ **CUDA acceleration**: 100-1000× speedup via PyCUDA
-✅ **Deep Adaptive Design**: Learn sequential policies to minimize terminal MOCU
+✅ **Two-level structure**: Clear separation between MOCU prediction and OED selection  
+✅ **Unified interface**: All methods inherit from `OEDMethod` base class  
+✅ **Modular design**: Easy to add new methods and predictors  
+✅ **CUDA acceleration**: 100-1000× speedup via PyTorch CUDA (no PyCUDA required)  
+✅ **Deep Adaptive Design**: Learn sequential policies to minimize terminal MOCU  
+✅ **Stable and safe**: No CUDA context conflicts (PyTorch-only implementation)  
+
+## Technical Details
+
+### MOCU Computation
+
+The MOCU (Multi-Objective Control Uncertainty) computation is implemented in `src/core/mocu.py` using PyTorch CUDA acceleration. This replaces the original PyCUDA implementation for better compatibility and stability.
+
+**Key advantages**:
+- No CUDA context conflicts (safe to use with PyTorch training)
+- Full CUDA acceleration (runs on GPU)
+- Easier to maintain (standard PyTorch operations)
+- Automatic device management (CPU fallback if CUDA unavailable)
+
+### DAD Training
+
+DAD (Deep Adaptive Design) uses REINFORCE policy gradient with MPNN predictor for fast MOCU estimation during training. The policy network learns to make sequential experimental selections to minimize terminal MOCU.
+
+**Training process**:
+1. Generate trajectories using an expert method (e.g., iNN) or random policy
+2. Train policy network using REINFORCE with MPNN-predicted MOCU as reward
+3. Evaluate trained policy against other OED methods
 
 ## Citation
 
@@ -333,26 +340,7 @@ If you use this code, please cite the original AccelerateOED paper and the DAD f
 
 See LICENSE file for details.
 
-## Summary of Changes
-
-### Cleaned & Organized Structure
-
-**Removed clutter**:
-- ✅ Removed 14 MD documentation files - Only README.md remains
-- ✅ Removed `src/strategies/` folder - Replaced by unified `src/methods/`
-- ✅ Removed redundant files - Test files and temporary artifacts
-
-**Renamed for clarity**:
-- `data_generation.py` → `generate_mocu_data.py`
-- `training.py` → `train_predictor.py`
-- `evaluation_unified.py` → `evaluate.py`
-
-**Organized models/** directory:
-- Created `models/predictors/` subdirectory
-- `predictors.py` - Unified implementations (use this)
-- `legacy_baselines.py` - Original CNN/MLP (backward compatibility)
-- `legacy_mpnn.py` - Original MPNN training (backward compatibility)
-- `predictor_utils.py` - Utility functions for loading/using predictors
+## Summary of Architecture
 
 ### Clean Architecture
 
@@ -361,7 +349,7 @@ See LICENSE file for details.
 | **OED Methods** | `src/methods/` | Selection strategies (iNN, NN, ODE, ENTROPY, RANDOM, DAD) |
 | **MOCU Predictors** | `src/models/predictors/` | Neural networks for MOCU prediction |
 | **DAD Policy** | `src/models/policy_networks.py` | Sequential decision policy |
-| **Core MOCU** | `src/core/mocu_cuda.py` | CUDA-accelerated computation |
+| **Core MOCU** | `src/core/mocu.py` | PyTorch CUDA-accelerated computation |
 | **Scripts** | `scripts/` | Data generation, training, evaluation |
 
 ### Evaluation Capabilities
@@ -383,10 +371,3 @@ Compares iNN, NN, ODE, ENTROPY, RANDOM, DAD on terminal MOCU, time complexity
 python scripts/visualize.py
 ```
 Generates MOCU curves, time complexity plots, performance tables
-
-### Key Benefits
-✅ **No redundancy** - Single source of truth for each component  
-✅ **Standard structure** - Follows Python best practices  
-✅ **Easy to navigate** - Clear organization  
-✅ **Production-ready** - Professional codebase  
-

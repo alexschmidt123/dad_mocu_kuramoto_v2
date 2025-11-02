@@ -30,9 +30,8 @@ from src.methods import (
     DAD_MOCU_Method,
 )
 from src.core.sync_detection import determineSyncN, determineSyncTwo
-# MOCU imported lazily when needed (only for methods that use PyCUDA directly, not iNN/NN)
-# This maintains separate usage pattern: MPNN methods (iNN/NN) never import PyCUDA
-# Only sampling-based methods (ODE, ENTROPY, RANDOM) use PyCUDA directly
+# MOCU imported lazily when needed (for sampling-based methods: ODE, ENTROPY, RANDOM)
+# MPNN methods (iNN/NN) use predictor instead of direct MOCU computation
 
 
 if __name__ == '__main__':
@@ -176,17 +175,14 @@ if __name__ == '__main__':
             
             # Compute initial MOCU (lazy import to maintain separation for MPNN methods)
             # IMPORTANT: For MPNN methods (iNN/NN), we compute initial MOCU BEFORE loading MPNN
-            # This ensures PyCUDA context is initialized separately from PyTorch MPNN operations
+            # This ensures MOCU computation is done separately from MPNN operations
             timeMOCU = time.time()
             it_temp_val = np.zeros(it_idx)
             
             # Lazy import MOCU only when needed (for initial MOCU computation)
-            # This maintains the separate usage pattern:
-            # - MPNN methods (iNN/NN): Use PyCUDA first, then load MPNN with sync, then alternate
-            # - Sampling methods (ODE/ENTROPY/RANDOM): Use PyCUDA directly
-            from src.core.mocu_backend import MOCU
+            from src.core.mocu import MOCU
             
-            # Ensure no MPNN operations are pending before PyCUDA usage
+            # Ensure no MPNN operations are pending before MOCU usage
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -199,8 +195,8 @@ if __name__ == '__main__':
                                      aInitialLower.copy(), aInitialUpper.copy(), 0)
             MOCUInitial = np.mean(it_temp_val)
             
-            # CRITICAL: Ensure all PyCUDA operations complete BEFORE initializing MPNN methods
-            # This maintains separate usage: PyCUDA operations finish, then MPNN loads
+            # CRITICAL: Ensure all MOCU operations complete BEFORE initializing MPNN methods
+            # This maintains separate usage: MOCU operations finish, then MPNN loads
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -215,7 +211,7 @@ if __name__ == '__main__':
             
             try:
                 if method_name == 'iNN':
-                    # MPNN method: PyCUDA is already initialized, but synchronized
+                    # MPNN method: MOCU computation is already done, synchronized
                     # MPNN model loading will happen separately
                     method = iNN_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
                                        model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))

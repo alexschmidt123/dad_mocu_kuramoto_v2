@@ -13,13 +13,11 @@ import argparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.core.mocu_backend import MOCU
+from src.core.mocu import MOCU
 from src.core.sync_detection import mocu_comp
 import numpy as np
 import random
-# CRITICAL: Lazy import torch - don't import at module level to avoid CUDA context initialization
-# This allows PyCUDA to initialize first during MOCU computation
-# torch and torch_geometric are imported inside functions that need them
+# Lazy import torch - don't import at module level (torch imports are inside functions)
 
 def generate_coupling_type1(w, N):
     """
@@ -121,7 +119,7 @@ def generate_single_sample(N, K_max, h, M, T, coupling_type='type1'):
 
 def getEdgeAtt(attr1, attr2, n):
     """Convert matrix attributes to edge attributes for PyTorch Geometric."""
-    # Lazy import to avoid CUDA context initialization before PyCUDA
+    # Lazy import torch
     import torch
     edge_attr = torch.zeros([2, n * (n - 1)])
     k = 0
@@ -136,7 +134,7 @@ def getEdgeAtt(attr1, attr2, n):
 
 def convert_to_pytorch_geometric(data_list):
     """Convert JSON data to PyTorch Geometric Data objects."""
-    # Lazy import to avoid CUDA context initialization before PyCUDA
+    # Lazy import torch
     import torch
     from torch_geometric.data import Data
     
@@ -278,7 +276,7 @@ def main():
     # Use naming convention: {total_samples}_{N}o_train.pth (matches original pattern)
     output_file = output_dir / f'{total_samples}_{N}o_train.pth'
     
-    # Lazy import torch for saving (PyCUDA is already done by this point)
+    # Lazy import torch for saving
     import torch
     torch.save(pyg_data_list, output_file)
     

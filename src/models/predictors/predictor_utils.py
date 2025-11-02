@@ -96,7 +96,7 @@ def load_mpnn_predictor(model_name, device='cuda'):
         )
     
     # Reuse loading logic from iNN/NN (same as paper 2023)
-    # Ensure clean CUDA state before loading (no PyCUDA context interference)
+    # Ensure clean CUDA state before loading
     if device.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
@@ -142,8 +142,7 @@ def predict_mocu(model, mean, std, w, a_lower, a_upper, device='cuda'):
     """
     Predict MOCU for given state using loaded MPNN model.
     
-    IMPORTANT: This function must maintain strict separation from PyCUDA.
-    Only use when PyCUDA context is NOT active (e.g., during DAD training with MPNN predictor).
+    IMPORTANT: This function uses PyTorch CUDA for MPNN prediction.
     
     Args:
         model: Loaded MPNNPlusPredictor model (should already be on correct device)

@@ -2,17 +2,13 @@
 Sampling-Based MOCU Computation (Ground Truth).
 
 This is NOT a learned predictor - it's the exact (but slow) computation
-using CUDA-accelerated Monte Carlo sampling.
+using PyTorch CUDA-accelerated Monte Carlo sampling.
 
-NOTE: ODE method uses MOCU() directly from mocu_cuda.py, NOT this class.
+NOTE: ODE method uses MOCU() directly from mocu.py, NOT this class.
 This class is primarily used for predictor evaluation/comparison in 
 compare_predictors.py as a ground truth baseline.
 
 This is what the paper calls "Sampling-based" in Table 1.
-
-CRITICAL: This file is separate from predictors.py to ensure that when
-MPNN predictors are imported, this class (which imports mocu_cuda) is
-never loaded. This prevents PyCUDA context initialization during DAD training.
 """
 
 import numpy as np
@@ -22,10 +18,10 @@ class SamplingBasedMOCU:
     """
     Ground truth MOCU computation using Monte Carlo sampling.
     
-    This is NOT a learned predictor - it's the exact (but slow) computation
-    using CUDA-accelerated integration.
+        This is NOT a learned predictor - it's the exact (but slow) computation
+        using PyTorch CUDA-accelerated integration.
     
-    NOTE: ODE method uses MOCU() directly from mocu_cuda.py, NOT this class.
+    NOTE: ODE method uses MOCU() directly from mocu.py, NOT this class.
     This class is primarily used for predictor evaluation/comparison in 
     compare_predictors.py as a ground truth baseline.
     
@@ -40,13 +36,11 @@ class SamplingBasedMOCU:
             T: Time horizon
         
         NOTE: MOCU is imported lazily here (inside __init__) to avoid
-        initializing PyCUDA context when this class is defined (module import).
-        PyCUDA context is only created when an instance is actually created.
+        importing when this class is defined (module import).
         """
         # LAZY IMPORT: Only import MOCU when an instance is created
-        # This prevents PyCUDA context initialization during module import
         # Import happens here, not at module level
-        from ...core.mocu_backend import MOCU
+        from ...core.mocu import MOCU
         self.MOCU = MOCU
         self.K_max = K_max
         self.h = h

@@ -1,11 +1,7 @@
 #!/bin/bash
-# Step 3: Train DAD policy (uses MPNN predictor - clean CUDA state, no PyCUDA)
-# This script runs in isolation to ensure no PyCUDA context conflicts
+# Step 3: Train DAD policy (uses MPNN predictor for MOCU estimation)
 
 set -e
-
-# Force PyTorch backend for safety (PyTorch is active during DAD training)
-export MOCU_BACKEND=torch
 
 CONFIG_FILE=$1
 if [ -z "$CONFIG_FILE" ]; then

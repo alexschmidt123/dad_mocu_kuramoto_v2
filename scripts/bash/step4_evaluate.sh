@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 4: Evaluate methods (may use PyCUDA for evaluation metrics)
+# Step 4: Evaluate methods (uses PyTorch CUDA for MOCU computation)
 # This script runs in isolation
 
 set -e

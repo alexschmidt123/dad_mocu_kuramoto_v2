@@ -12,5 +12,5 @@ demjson3==3.0.6
 tqdm==4.67.1
 pyyaml==6.0.1
 
-# Note: PyTorch, PyTorch Geometric, and PyCUDA are installed separately
+# Note: PyTorch and PyTorch Geometric are installed separately
 # See README.md Installation section for detailed instructions

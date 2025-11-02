@@ -4,14 +4,8 @@ Train DAD (Deep Adaptive Design) policy network using imitation learning or RL.
 This script trains a policy network to minimize terminal MOCU through sequential
 experimental design decisions.
 
-CRITICAL: MOCU_BACKEND must be set before any imports to prevent PyCUDA conflicts.
+DAD policy training script using REINFORCE with MPNN predictor.
 """
-
-# CRITICAL: Set MOCU_BACKEND BEFORE any other imports to prevent PyCUDA from loading
-import os
-if os.getenv('MOCU_BACKEND') != 'torch':
-    # Auto-set to torch for DAD training (always uses PyTorch, PyCUDA would segfault)
-    os.environ['MOCU_BACKEND'] = 'torch'
 
 import sys
 from pathlib import Path
@@ -23,6 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 import torch
+# CRITICAL: Disable cuDNN to avoid potential segfaults during backward pass
+# This is a workaround for PyTorch 2.5.1+cu121 compatibility issues
+torch.backends.cudnn.enabled = False
+print("[TRAIN] cuDNN disabled to avoid potential CUDA conflicts")
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -319,7 +318,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             if torch.cuda.is_available():
                 torch.cuda.synchronize()  # ADD THIS
         else:
-            from src.core.mocu_backend import MOCU
+            from src.core.mocu import MOCU
             terminal_MOCU = MOCU(K_max, w, N, h, M, T, a_lower, a_upper, 0)
         
         # CRITICAL: Ensure terminal_MOCU is a Python float (not a tensor) before using in computation
@@ -486,35 +485,22 @@ def main():
             # Get K_max from config or use default
             K_max = config.get('K_max', 20480)
             
-            # CRITICAL: REINFORCE training MUST use MPNN predictor when PyTorch is active
-            # PyCUDA cannot safely share PyTorch's CUDA context - will cause segmentation fault
-            # MPNN predictor is REQUIRED (not optional) for DAD training
+            # REINFORCE training uses MPNN predictor for fast MOCU estimation
             mocu_model = None
             mocu_mean = None
             mocu_std = None
             
-            # For REINFORCE, MPNN predictor is REQUIRED (PyCUDA causes segfault with PyTorch)
-            # Auto-enable if not explicitly disabled
+            # Auto-enable MPNN predictor if not explicitly disabled
             use_predicted_mocu = args.use_predicted_mocu if args.use_predicted_mocu else True
             
-            # If user explicitly disabled MPNN, this will segfault - warn and allow for testing
             if not use_predicted_mocu:
-                import warnings
-                warnings.warn(
-                    "WARNING: Running REINFORCE without MPNN predictor (direct PyCUDA). "
-                    "This WILL cause segmentation fault when PyTorch CUDA context is active. "
-                    "Please use --use-predicted-mocu or train MPNN predictor first.",
-                    RuntimeWarning
-                )
                 print("\n" + "!"*80)
-                print("WARNING: Direct PyCUDA MOCU computation will likely cause segmentation fault")
-                print("         when PyTorch CUDA context is active!")
-                print("         Recommendation: Use --use-predicted-mocu flag")
+                print("WARNING: Running REINFORCE without MPNN predictor.")
+                print("         Direct MOCU computation is slow - use --use-predicted-mocu for faster training")
                 print("!"*80 + "\n")
             if use_predicted_mocu:
                 try:
                     # Ensure CUDA is in a clean state before loading MPNN predictor
-                    # This prevents conflicts between PyCUDA context (if any) and PyTorch
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()
                         torch.cuda.empty_cache()
@@ -595,7 +581,7 @@ def main():
                     print(f"[REINFORCE] ERROR: MPNN predictor not found!")
                     print(f"[REINFORCE] {e}")
                     print(f"\n[REINFORCE] REINFORCE training requires MPNN predictor to avoid segmentation faults.")
-                    print(f"[REINFORCE] PyCUDA cannot be used when PyTorch CUDA context is active.")
+                    print(f"[REINFORCE] MPNN predictor is required for efficient training.")
                     print(f"\n[REINFORCE] Solutions:")
                     print(f"  1. Train MPNN predictor first: bash scripts/bash/step2_train_mpnn.sh configs/fast_config.yaml")
                     print(f"  2. Or set MOCU_MODEL_NAME environment variable: export MOCU_MODEL_NAME='{model_name}'")
@@ -604,8 +590,7 @@ def main():
                     raise RuntimeError(
                         f"MPNN predictor is REQUIRED for REINFORCE training. "
                         f"Model '{model_name}' not found. "
-                        f"Direct PyCUDA MOCU computation will cause segmentation fault "
-                        f"when PyTorch CUDA context is active. "
+                        f"Direct MOCU computation is slow. "
                         f"Please train MPNN predictor first or provide correct MOCU_MODEL_NAME."
                     ) from e
                 except Exception as e:

@@ -9,7 +9,7 @@ Predictors (6 total):
 - MPNNPredictor: Basic Message Passing Neural Network
 - MPNNPlusPredictor: MPNN with ranking constraint (WINNER - used in iNN/NN)
 - EnsemblePredictor: Ensemble of multiple predictors
-- SamplingBasedMOCU: Ground truth MOCU computation (separate file to avoid PyCUDA import)
+- SamplingBasedMOCU: Ground truth MOCU computation
 
 Files:
 - mlp.py: MLP predictor
@@ -17,7 +17,7 @@ Files:
 - mpnn.py: Basic MPNN predictor
 - mpnn_plus.py: MPNN+ predictor (winner)
 - ensemble.py: Ensemble predictor
-- sampling_mocu.py: Sampling-based ground truth (separate to avoid PyCUDA)
+- sampling_mocu.py: Sampling-based ground truth
 - utils.py: Shared utility functions
 - predictor_utils.py: Utilities for loading/using MPNN predictor
 
@@ -41,12 +41,12 @@ from .utils import (
     pre2R_mpnn,
 )
 
-# SamplingBasedMOCU is NOT imported here to avoid PyCUDA context initialization
+# SamplingBasedMOCU is NOT imported here (only loaded when needed)
 # It's only needed by compare_predictors.py for evaluation
 # Import it from the separate file when needed:
 #   from src.models.predictors.sampling_mocu import SamplingBasedMOCU
 # 
-# NOTE: ODE method uses MOCU() directly from mocu_cuda.py, NOT SamplingBasedMOCU
+# NOTE: ODE method uses MOCU() directly from mocu.py, NOT SamplingBasedMOCU
 
 __all__ = [
     # Predictors

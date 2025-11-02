@@ -24,8 +24,7 @@ sys.path.append(str(PROJECT_ROOT))
 from src.methods.base import OEDMethod
 from src.models.policy_networks import DADPolicyNetwork, create_state_data
 # MOCU imported lazily in base.run_episode() to maintain separate usage pattern
-# DAD uses policy network (PyTorch) for selection, base.run_episode() uses PyCUDA for MOCU computation
-# This ensures proper separation: no PyCUDA context when policy network is active
+# DAD uses policy network (PyTorch) for selection, base.run_episode() uses PyTorch CUDA for MOCU computation
 
 
 class DAD_MOCU_Method(OEDMethod):

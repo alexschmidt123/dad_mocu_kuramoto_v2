@@ -1,11 +1,7 @@
 #!/bin/bash
-# Step 1: Generate MPNN training data (uses PyCUDA)
-# This script runs in isolation to avoid CUDA context conflicts
+# Step 1: Generate MPNN training data (uses PyTorch CUDA acceleration)
 
 set -e
-
-# Force PyCUDA backend for speed (no PyTorch active during data generation)
-export MOCU_BACKEND=pycuda
 
 # Load config
 CONFIG_FILE=$1
