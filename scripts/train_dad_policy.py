@@ -446,22 +446,44 @@ def main():
             K_max = config.get('K_max', 20480)
             
             # Optionally use MPNN predictor for fast MOCU prediction
+            # IMPORTANT: Ensure any previous PyCUDA context is cleared before loading MPNN
+            # This ensures clean separation between PyCUDA and PyTorch/cuDNN usage
             mocu_model = None
             mocu_mean = None
             mocu_std = None
             use_predicted_mocu = args.use_predicted_mocu
             if use_predicted_mocu:
                 try:
+                    # Ensure CUDA is in a clean state before loading MPNN predictor
+                    # This prevents conflicts between PyCUDA context (if any) and PyTorch
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                    
                     from src.models.predictors.mocu_predictor_utils import load_mpnn_predictor
                     # Get model name from environment variable (set by run.sh) or config, or use default
                     import os
                     model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name') or f'cons{N}'
                     mocu_model, mocu_mean, mocu_std = load_mpnn_predictor(model_name=model_name, device=str(device))
+                    
+                    # Ensure model is properly moved to device and in eval mode
+                    if mocu_model is not None:
+                        mocu_model.eval()
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                    
                     print(f"[REINFORCE] Using MPNN predictor '{model_name}' for fast MOCU estimation")
                 except FileNotFoundError as e:
                     print(f"[REINFORCE] Warning: {e}")
                     print(f"[REINFORCE] Falling back to direct CUDA MOCU computation (slow)")
                     use_predicted_mocu = False
+                except Exception as e:
+                    print(f"[REINFORCE] Error loading MPNN predictor: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    print(f"[REINFORCE] Falling back to direct CUDA MOCU computation (slow)")
+                    use_predicted_mocu = False
+                    mocu_model = None
             
             loss, reward = train_reinforce(
                 model, trajectories, optimizer, device, N, 

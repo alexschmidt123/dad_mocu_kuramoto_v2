@@ -94,20 +94,41 @@ def load_mpnn_predictor(model_name, device='cuda'):
         )
     
     # Reuse loading logic from iNN/NN (same as paper 2023)
+    # Ensure clean CUDA state before loading (no PyCUDA context interference)
+    import torch
+    if device.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    state_dict = checkpoint if isinstance(checkpoint, dict) else (
-        checkpoint.state_dict() if hasattr(checkpoint, 'state_dict') else checkpoint
-    )
+    
+    # Handle different checkpoint formats (same as inn.py and nn.py)
+    if isinstance(checkpoint, dict):
+        # New format: {'model_state_dict': ..., 'config': ...}
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        model_config = checkpoint.get('config', {})
+    else:
+        # Old format: direct state_dict or model object
+        if hasattr(checkpoint, 'state_dict'):
+            state_dict = checkpoint.state_dict()
+            model_config = {}
+        else:
+            state_dict = checkpoint
+            model_config = {}
     
     # Infer dim from saved model (same as inn.py and nn.py)
     if 'lin0.weight' in state_dict:
         saved_dim = state_dict['lin0.weight'].shape[0]
     else:
-        saved_dim = 32  # Default
+        saved_dim = model_config.get('dim', 32)  # Use config dim if available, else default
     
     model = MPNNPlusPredictor(dim=saved_dim).to(device)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
+    
+    # Ensure model is fully loaded and on correct device
+    if device.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize()
     
     stats = torch.load(stats_path, map_location=device, weights_only=False)
     mean = stats['mean']
@@ -144,8 +165,17 @@ def predict_mocu(model, mean, std, w, a_lower, a_upper, device='cuda'):
     data = data.to(device)
     
     # Predict (same as iNN/NN)
+    # Ensure CUDA is synchronized before prediction to avoid conflicts
+    import torch
+    if device.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    
     with torch.no_grad():
         pred_normalized = model(data).cpu().item()
+    
+    # Ensure prediction is complete
+    if device.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize()
     
     # Denormalize (same as iNN/NN)
     mocu_pred = pred_normalized * std + mean
