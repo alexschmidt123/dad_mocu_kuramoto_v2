@@ -34,6 +34,7 @@ def load_mpnn_predictor(model_name, device='cuda'):
         mean: Normalization mean
         std: Normalization std
     """
+    # torch is already imported at module level
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     
     # New structure: models/{config_name}/{timestamp}/model.pth
@@ -95,7 +96,6 @@ def load_mpnn_predictor(model_name, device='cuda'):
     
     # Reuse loading logic from iNN/NN (same as paper 2023)
     # Ensure clean CUDA state before loading (no PyCUDA context interference)
-    import torch
     if device.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
@@ -166,7 +166,6 @@ def predict_mocu(model, mean, std, w, a_lower, a_upper, device='cuda'):
     
     # Predict (same as iNN/NN)
     # Ensure CUDA is synchronized before prediction to avoid conflicts
-    import torch
     if device.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize()
     
