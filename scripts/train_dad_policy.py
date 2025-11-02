@@ -218,13 +218,19 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
     
+    print("[REINFORCE] Starting training loop...")
+    print(f"[REINFORCE] Number of trajectories: {len(trajectories)}")
+    
     for traj_idx, traj in enumerate(trajectories):
+        print(f"[REINFORCE] Processing trajectory {traj_idx + 1}/{len(trajectories)}")
         # Periodically clear cache
         if traj_idx > 0 and traj_idx % 10 == 0 and torch.cuda.is_available():
             torch.cuda.synchronize()  # ADD THIS
             torch.cuda.empty_cache()
             
+        print(f"[REINFORCE] Trajectory {traj_idx}: Zeroing gradients...")
         optimizer.zero_grad()
+        print(f"[REINFORCE] Trajectory {traj_idx}: Gradients zeroed")
         
         w = traj['w']
         a_true = traj.get('a_true', None)
@@ -240,15 +246,19 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         a_upper = traj['states'][0][1].copy()
         
         K = len(traj['actions'])
+        print(f"[REINFORCE] Trajectory {traj_idx}: Starting {K} steps...")
         
         for step in range(K):
+            print(f"[REINFORCE] Trajectory {traj_idx}, Step {step + 1}/{K}")
             # === POLICY NETWORK FORWARD PASS ===
             # Ensure clean state before policy operations
             if torch.cuda.is_available():
                 torch.cuda.synchronize()  # ADD THIS
                 torch.cuda.empty_cache()   # ADD THIS
             
+            print(f"[REINFORCE] Trajectory {traj_idx}, Step {step + 1}: Creating state data...")
             state_data = create_state_data(w, a_lower, a_upper, device=device)
+            print(f"[REINFORCE] Trajectory {traj_idx}, Step {step + 1}: State data created")
             
             if step == 0:
                 history_tensor = None
@@ -267,7 +277,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             available_mask_tensor = torch.from_numpy(available_mask_array).to(device)
             
             # Policy forward pass
+            print(f"[REINFORCE] Trajectory {traj_idx}, Step {step + 1}: Running policy forward...")
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)
+            print(f"[REINFORCE] Trajectory {traj_idx}, Step {step + 1}: Policy forward complete")
             
             # CRITICAL: Ensure policy forward completes before continuing
             if torch.cuda.is_available():
@@ -292,13 +304,16 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 torch.cuda.synchronize()  # ADD THIS
         
         # === MOCU COMPUTATION ===
+        print(f"[REINFORCE] Trajectory {traj_idx}: Computing MOCU...")
         if use_predicted_mocu and mocu_model is not None:
             # Ensure policy network is done
             if torch.cuda.is_available():
                 torch.cuda.synchronize()  # ADD THIS
                 torch.cuda.empty_cache()   # ADD THIS
             
+            print(f"[REINFORCE] Trajectory {traj_idx}: Calling predict_mocu...")
             terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+            print(f"[REINFORCE] Trajectory {traj_idx}: predict_mocu returned: {terminal_MOCU}")
             
             # Ensure MPNN prediction completes
             if torch.cuda.is_available():
@@ -322,22 +337,29 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         loss = torch.stack(policy_loss).sum()
         
         # === BACKWARD PASS ===
+        print(f"[REINFORCE] Trajectory {traj_idx}: Starting backward pass...")
         # Ensure MOCU computation is done
         if use_predicted_mocu and mocu_model is not None and torch.cuda.is_available():
             torch.cuda.synchronize()  # ADD THIS
         
         loss.backward()
+        print(f"[REINFORCE] Trajectory {traj_idx}: Backward pass complete")
         
         # Ensure backward completes
         if torch.cuda.is_available():
             torch.cuda.synchronize()  # ADD THIS
         
+        print(f"[REINFORCE] Trajectory {traj_idx}: Clipping gradients...")
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        print(f"[REINFORCE] Trajectory {traj_idx}: Stepping optimizer...")
         optimizer.step()
+        print(f"[REINFORCE] Trajectory {traj_idx}: Optimizer step complete")
         
         # Ensure optimizer step completes
         if torch.cuda.is_available():
             torch.cuda.synchronize()  # ADD THIS
+        
+        print(f"[REINFORCE] Trajectory {traj_idx}: Complete (loss={loss.item():.6f}, reward={reward:.6f})")
         
         total_loss += loss.item()
         total_reward += reward
