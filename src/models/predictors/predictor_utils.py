@@ -233,4 +233,18 @@ def predict_mocu(model, mean, std, w, a_lower, a_upper, device='cuda'):
     # Denormalize (same as iNN/NN)
     mocu_pred = pred_normalized * std + mean
     
+    # Debug: Print prediction details for DAD troubleshooting
+    # This helps identify if predictor is seeing different inputs
+    if hasattr(model, '_debug_prediction'):
+        # Show multiple bound samples to check if matrix is updating
+        sample1 = f"bounds[0,1]=({a_lower[0,1]:.4f},{a_upper[0,1]:.4f})"
+        sample2 = f"bounds[2,3]=({a_lower[2,3]:.4f},{a_upper[2,3]:.4f})"
+        sample3 = f"bounds[1,4]=({a_lower[1,4]:.4f},{a_upper[1,4]:.4f})"
+        # Check if bounds matrix has any variation
+        bounds_min = a_lower.min()
+        bounds_max = a_upper.max()
+        print(f"[predict_mocu] Normalized: {pred_normalized:.6f}, Denormalized: {mocu_pred:.6f}")
+        print(f"[predict_mocu] Samples: {sample1}, {sample2}, {sample3}")
+        print(f"[predict_mocu] Bounds range: [{bounds_min:.4f}, {bounds_max:.4f}]")
+    
     return float(mocu_pred)
