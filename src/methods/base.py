@@ -11,10 +11,9 @@ import os
 from typing import Tuple, List, Dict, Any
 
 # Import torch for device checks
-try:
-    import torch
-except ImportError:
-    torch = None
+# Lazy import torch to avoid initializing PyTorch CUDA before PyCUDA methods run
+# Import will happen lazily when needed (for PyTorch-based methods)
+torch = None
 
 
 class OEDMethod(ABC):
@@ -227,8 +226,8 @@ class OEDMethod(ABC):
                     from ..core.mocu_pycuda import MOCU_pycuda
                     for l in range(self.it_idx):
                         it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT, 
-                                                      self.MReal, self.TReal, 
-                                                      a_lower_init, a_upper_init, 0)
+                                                     self.MReal, self.TReal, 
+                                                     a_lower_init, a_upper_init, 0)
                     self._last_valid_mocu = np.mean(it_temp_val)
                 except (ImportError, RuntimeError) as e:
                     # PyCUDA failed - use zero as last resort
@@ -243,8 +242,11 @@ class OEDMethod(ABC):
         MOCUCurve[0] = np.mean(it_temp_val)
         
         # Ensure all CUDA operations are complete before MPNN usage
+        # Lazy import torch only when needed
         try:
-            import torch
+            if torch is None:
+                import torch as _torch
+                globals()['torch'] = _torch
             if torch.cuda.is_available():
                 torch.cuda.synchronize()  # Wait for CUDA kernels to finish
         except:
@@ -278,8 +280,11 @@ class OEDMethod(ABC):
             )
             
             # Ensure MPNN operations are complete before next iteration
+            # Lazy import torch only when needed
             try:
-                import torch
+                if torch is None:
+                    import torch as _torch
+                    globals()['torch'] = _torch
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()  # Wait for MPNN forward passes to complete
             except:
@@ -420,43 +425,50 @@ class OEDMethod(ABC):
                 # Use same troubleshooting approach as DAD training
                 it_temp_val = np.zeros(self.it_idx)
                 
-                # CRITICAL: Clear PyTorch CUDA context before PyCUDA (same as DAD training)
-                # This ensures PyCUDA can work even if PyTorch was imported
+                # CRITICAL: Do NOT import torch here - it will initialize PyTorch CUDA
+                # This is a PyCUDA method (RANDOM/ODE/ENTROPY) - must avoid PyTorch CUDA
+                # Clear any potential PyTorch CUDA context (lazy check)
                 try:
-                    if torch is not None and torch.cuda.is_available():
-                        # Clear any PyTorch CUDA operations before PyCUDA
-                        torch.cuda.synchronize()
-                        torch.cuda.empty_cache()
-                        # Small delay to let CUDA operations complete
-                        time.sleep(0.01)
+                    # Only check/clear if torch was already imported (shouldn't happen for PyCUDA methods)
+                    if torch is not None:
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                            # Small delay to let CUDA operations complete
+                            time.sleep(0.01)
                 except:
                     pass
                 
-                # CRITICAL: Check if PyCUDA context can be used (same as DAD training check)
-                # If PyTorch CUDA is initialized, PyCUDA will fail - skip it early
+                # CRITICAL: Check if PyCUDA context can be used
+                # Do NOT check torch.cuda.is_initialized() here - it might trigger PyTorch CUDA initialization!
                 pycuda_available = True
                 conflict_detected = False
                 
                 try:
                     import pycuda.driver as drv
-                    # Check if PyTorch CUDA is initialized (this prevents PyCUDA from working)
-                    if torch is not None and torch.cuda.is_initialized():
-                        # PyTorch CUDA is active - PyCUDA will fail due to context conflict
-                        conflict_detected = True
-                        pycuda_available = False
-                        if not hasattr(self, '_pycuda_conflict_warned'):
-                            print(f"[{method_name}] Warning: PyTorch CUDA is initialized - PyCUDA will fail (context conflict)")
-                            print(f"[{method_name}] Using fallback MOCU computation")
-                            self._pycuda_conflict_warned = True
-                    else:
-                        # PyTorch CUDA not initialized - PyCUDA might work
+                    # Check if PyCUDA context exists and can be used
+                    try:
+                        pycuda_ctx = drv.Context.get_current()
+                        if pycuda_ctx is not None:
+                            # PyCUDA context exists - should work
+                            pass
+                    except:
+                        # No PyCUDA context - might work anyway (lazy initialization)
+                        pass
+                    
+                    # Only check PyTorch CUDA if torch was already imported (avoid importing it here)
+                    if torch is not None:
                         try:
-                            pycuda_ctx = drv.Context.get_current()
-                            if pycuda_ctx is not None:
-                                # PyCUDA context exists - should work
-                                pass
+                            if torch.cuda.is_initialized():
+                                # PyTorch CUDA is active - PyCUDA will fail due to context conflict
+                                conflict_detected = True
+                                pycuda_available = False
+                                if not hasattr(self, '_pycuda_conflict_warned'):
+                                    print(f"[{method_name}] Warning: PyTorch CUDA is initialized - PyCUDA will fail (context conflict)")
+                                    print(f"[{method_name}] Using fallback MOCU computation")
+                                    self._pycuda_conflict_warned = True
                         except:
-                            # No PyCUDA context - might work anyway (lazy initialization)
+                            # torch.cuda.is_initialized() might not be available
                             pass
                 except ImportError:
                     pycuda_available = False
@@ -470,8 +482,8 @@ class OEDMethod(ABC):
                         # Try PyCUDA computation
                         for l in range(self.it_idx):
                             it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT,
-                                                         self.MReal, self.TReal,
-                                                         a_lower_current, a_upper_current, 0)
+                                     self.MReal, self.TReal,
+                                     a_lower_current, a_upper_current, 0)
                         MOCUCurve[iteration + 1] = np.mean(it_temp_val)
                         # Update last valid MOCU for future fallbacks
                         self._last_valid_mocu = MOCUCurve[iteration + 1]

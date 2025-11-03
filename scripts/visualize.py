@@ -12,11 +12,10 @@ import matplotlib.pyplot as plt
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Visualize MOCU-OED results')
 parser.add_argument('--N', type=int, default=5, help='Number of oscillators')
-parser.add_argument('--update_cnt', type=int, default=10, help='Number of updates')
+parser.add_argument('--update_cnt', type=int, default=None, help='Number of updates (auto-detect from data if not provided)')
 parser.add_argument('--result_folder', type=str, required=True, help='Results directory to visualize')
 args = parser.parse_args()
 
-update_cnt = args.update_cnt
 N = args.N
 resultFolder = args.result_folder
 
@@ -44,6 +43,8 @@ print(f"Found results for methods: {available_methods}")
 
 # Load data for available methods
 method_data = {}
+update_cnt_detected = None
+
 for method in available_methods:
     mocu_file = os.path.join(resultFolder, f'{method}_MOCU.txt')
     time_file = os.path.join(resultFolder, f'{method}_timeComplexity.txt')
@@ -63,6 +64,27 @@ for method in available_methods:
         'mocu': mocu_mean,
         'time': time_mean
     }
+    
+    # Auto-detect update_cnt from data shape (number of iterations + 1 for initial)
+    if update_cnt_detected is None:
+        update_cnt_detected = len(mocu_mean) - 1
+        print(f"Auto-detected update_cnt={update_cnt_detected} from data shape")
+
+# Use provided update_cnt or auto-detected value
+update_cnt = args.update_cnt if args.update_cnt is not None else update_cnt_detected
+if update_cnt is None:
+    print("Error: Could not determine update_cnt. Please provide --update_cnt argument.")
+    sys.exit(1)
+
+print(f"Using update_cnt={update_cnt}")
+
+# Verify data dimensions match
+for method in available_methods:
+    if len(method_data[method]['mocu']) != update_cnt + 1:
+        print(f"Warning: {method} MOCU data has {len(method_data[method]['mocu'])} values, expected {update_cnt + 1}")
+        print(f"  Adjusting update_cnt to match data...")
+        update_cnt = len(method_data[method]['mocu']) - 1
+        break
 
 # Plot MOCU curves
 x_ax = np.arange(0, update_cnt + 1, 1)

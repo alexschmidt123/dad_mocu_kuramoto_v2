@@ -16,6 +16,10 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
 
+# Get update_cnt from config (auto-detect from data if not provided)
+UPDATE_CNT=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "update_count:" | awk '{print $2}')
+[ -z "$UPDATE_CNT" ] && UPDATE_CNT=""
+
 # Get result folder (most recent)
 RESULT_RUN_FOLDER=$(ls -td ${PROJECT_ROOT}/results/${CONFIG_NAME}/*/ 2>/dev/null | head -1 || echo "")
 
@@ -36,7 +40,12 @@ if [ "${ABS_RESULT_FOLDER: -1}" != "/" ]; then
     ABS_RESULT_FOLDER="${ABS_RESULT_FOLDER}/"
 fi
 
-python3 visualize.py --N $N --update_cnt 10 --result_folder "$ABS_RESULT_FOLDER"
+# Pass update_cnt if found in config, otherwise let visualize.py auto-detect
+if [ -n "$UPDATE_CNT" ]; then
+    python3 visualize.py --N $N --update_cnt $UPDATE_CNT --result_folder "$ABS_RESULT_FOLDER"
+else
+    python3 visualize.py --N $N --result_folder "$ABS_RESULT_FOLDER"
+fi
 
 echo "✓ Visualizations generated: ${RESULT_RUN_FOLDER}MOCU_${N}.png"
 
