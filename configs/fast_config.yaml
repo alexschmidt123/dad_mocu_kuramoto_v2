@@ -36,13 +36,19 @@ experiment:
   it_idx: 3                # Minimal iterations
   K_max: 1024              # Match dataset K_max
   methods:
+    - "RANDOM"             # Random baseline (run PyCUDA methods first)
     - "iNN"                # Iterative MPNN (best method)
-    - "RANDOM"             # Random baseline (fastest)
     - "DAD"                # Deep Adaptive Design
   
   # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
   # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)
   dad_method: "reinforce"  # REINFORCE directly optimizes terminal MOCU
+
+# DAD policy training data generation
+dad_data:
+  num_episodes: 100        # Number of trajectories to generate (MINIMAL for testing)
+  K: 4                     # Number of sequential experiments per trajectory
+  use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended)
 
 # Paths (relative to project root)
 paths:

@@ -12,9 +12,20 @@ fi
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
+# Resolve config file path (handle relative paths)
+if [[ "$CONFIG_FILE" != /* ]]; then
+    # Relative path - resolve from PROJECT_ROOT
+    CONFIG_FILE="${PROJECT_ROOT}/${CONFIG_FILE}"
+fi
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Config file not found: $CONFIG_FILE"
+    exit 1
+fi
+
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
-N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
-DAD_METHOD=$(grep "dad_method:" $CONFIG_FILE | awk '{print $2}' | tr -d '"' || echo "reinforce")
+N=$(grep "^N:" "$CONFIG_FILE" | awk '{print $2}')
+DAD_METHOD=$(grep "dad_method:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || echo "reinforce")
 
 # Get model folder and name from previous step
 MODEL_RUN_FOLDER=$(cat /tmp/mocu_model_folder_${CONFIG_NAME}.txt 2>/dev/null || echo "")
@@ -36,12 +47,42 @@ if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
     mkdir -p "$DATA_FOLDER"
     ABS_DAD_DATA_FOLDER=$(cd "$DATA_FOLDER" && pwd)
     
+    # Read DAD data generation settings from config file BEFORE changing directory
+    # Ensure config file path is absolute
+    ABS_CONFIG_FILE="$CONFIG_FILE"
+    if [[ "$ABS_CONFIG_FILE" != /* ]]; then
+        ABS_CONFIG_FILE="${PROJECT_ROOT}/${ABS_CONFIG_FILE}"
+    fi
+    
+    NUM_EPISODES=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  num_episodes:" | awk '{print $2}' || echo "1000")
+    K=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  K:" | awk '{print $2}' || echo "4")
+    USE_PRECOMPUTED_MOCU=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  use_precomputed_mocu:" | awk '{print $2}' || echo "true")
+    
+    # Validate values are not empty
+    if [ -z "$NUM_EPISODES" ]; then
+        NUM_EPISODES=1000
+    fi
+    if [ -z "$K" ]; then
+        K=4
+    fi
+    if [ -z "$USE_PRECOMPUTED_MOCU" ]; then
+        USE_PRECOMPUTED_MOCU=true
+    fi
+    
+    echo "  DAD data settings: num_episodes=$NUM_EPISODES, K=$K, use_precomputed_mocu=$USE_PRECOMPUTED_MOCU"
+    
     cd "${PROJECT_ROOT}/scripts"
-    python3 generate_dad_data.py \
-        --N $N \
-        --num-episodes 100 \
-        --K 4 \
-        --output-dir "$ABS_DAD_DATA_FOLDER"
+    
+    # Pre-compute MOCU using MPNN predictor if available and configured
+    CMD="python3 generate_dad_data.py --N $N --num-episodes $NUM_EPISODES --K $K --output-dir $ABS_DAD_DATA_FOLDER"
+    if [ "$USE_PRECOMPUTED_MOCU" = "true" ] && [ -n "$MOCU_MODEL_NAME" ] && [ -f "${MODEL_RUN_FOLDER}model.pth" ]; then
+        CMD="$CMD --use-mpnn-predictor --mpnn-model-name $MOCU_MODEL_NAME"
+        echo "  Using MPNN predictor to pre-compute MOCU values"
+    else
+        echo "  Not using MPNN predictor (MOCU will be computed during training if needed)"
+    fi
+    
+    eval $CMD
 fi
 
 echo "Training DAD policy (Step 3/5)..."

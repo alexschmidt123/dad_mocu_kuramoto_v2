@@ -154,7 +154,7 @@ class iNN_Method(OEDMethod):
                 )
                 P_syn_list.append(P_syn)
                 
-                edge_attr_syn = get_edge_attr_from_bounds(a_lower_syn, a_upper_syn, self.N).t().to(self.device)
+                edge_attr_syn = get_edge_attr_from_bounds(a_lower_syn, a_upper_syn, self.N).to(self.device)
                 data_syn = Data(x=x, edge_index=edge_index, edge_attr=edge_attr_syn, y=dummy_y)
                 data_list.append(data_syn)
                 
@@ -165,7 +165,7 @@ class iNN_Method(OEDMethod):
                 a_upper_nonsyn[i, j] = a_tilde
                 a_upper_nonsyn[j, i] = a_tilde
                 
-                edge_attr_nonsyn = get_edge_attr_from_bounds(a_lower_nonsyn, a_upper_nonsyn, self.N).t().to(self.device)
+                edge_attr_nonsyn = get_edge_attr_from_bounds(a_lower_nonsyn, a_upper_nonsyn, self.N).to(self.device)
                 data_nonsyn = Data(x=x, edge_index=edge_index, edge_attr=edge_attr_nonsyn, y=dummy_y)
                 data_list.append(data_nonsyn)
         

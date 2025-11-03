@@ -21,15 +21,26 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.methods import (
-    iNN_Method,
-    NN_Method,
-    ODE_Method,
-    iODE_Method,
-    ENTROPY_Method,
-    RANDOM_Method,
-    DAD_MOCU_Method,
-)
+# CRITICAL: Check for PyCUDA context BEFORE importing torch (same as DAD training)
+# If PyCUDA context exists, PyTorch CUDA initialization may conflict
+try:
+    import pycuda.driver as drv
+    try:
+        ctx = drv.Context.get_current()
+        if ctx is not None:
+            print("[EVAL] PyCUDA context detected - this is OK for evaluation")
+            print("[EVAL] PyCUDA will be used for RANDOM/ENTROPY/ODE methods first")
+    except Exception:
+        # No PyCUDA context - that's fine
+        pass
+except ImportError:
+    pass  # PyCUDA not installed
+except Exception:
+    pass
+
+# CRITICAL: Lazy import methods to avoid PyTorch CUDA initialization before PyCUDA usage
+# Import methods only when needed (inside method loop)
+# This ensures PyCUDA can be used for RANDOM/ENTROPY/ODE before PyTorch CUDA is initialized
 from src.core.sync_detection import determineSyncN, determineSyncTwo
 # MOCU imported lazily when needed (for sampling-based methods: ODE, ENTROPY, RANDOM)
 # MPNN methods (iNN/NN) use predictor instead of direct MOCU computation
@@ -43,12 +54,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
     # ========== Configuration ==========
     # Read from environment variables (set by workflow scripts from config file)
-    # Fallback to defaults if not set
-    it_idx = int(os.getenv('EVAL_IT_IDX', '10'))  # Number of MOCU averaging iterations
-    update_cnt = int(os.getenv('EVAL_UPDATE_CNT', '10'))  # Number of sequential experiments
-    N = int(os.getenv('EVAL_N', '5'))  # Number of oscillators
-    K_max = int(os.getenv('EVAL_K_MAX', '20480'))  # Monte Carlo samples for MOCU
-    numberOfSimulationsPerMethod = int(os.getenv('EVAL_NUM_SIMULATIONS', '10'))
+    # Fallback to defaults if not set or empty
+    def safe_getenv_int(key, default):
+        """Get environment variable as int, handling empty strings."""
+        val = os.getenv(key, default)
+        return int(val) if val else int(default)
+    
+    it_idx = safe_getenv_int('EVAL_IT_IDX', '10')  # Number of MOCU averaging iterations
+    update_cnt = safe_getenv_int('EVAL_UPDATE_CNT', '10')  # Number of sequential experiments
+    N = safe_getenv_int('EVAL_N', '5')  # Number of oscillators
+    K_max = safe_getenv_int('EVAL_K_MAX', '20480')  # Monte Carlo samples for MOCU
+    numberOfSimulationsPerMethod = safe_getenv_int('EVAL_NUM_SIMULATIONS', '10')
     
     # Get result folder from environment variable
     result_folder = os.getenv('RESULT_FOLDER', str(PROJECT_ROOT / 'results' / 'default'))
@@ -170,81 +186,80 @@ if __name__ == '__main__':
         np.savetxt(coupling_file, a, fmt='%.64e')
         
         # ========== Evaluate each method ==========
+        # Compute initial MOCU ONCE per simulation (before any methods are initialized)
+        # This avoids PyCUDA/PyTorch CUDA conflicts
+        # CRITICAL: Compute BEFORE any MPNN methods are loaded to avoid CUDA context conflicts
+        timeMOCU = time.time()
+        it_temp_val = np.zeros(it_idx)
+        
+        try:
+            from src.core.mocu_pycuda import MOCU_pycuda
+            # CRITICAL: Ensure no PyTorch CUDA context exists before PyCUDA
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except:
+                pass
+            
+            with tqdm(total=it_idx, desc="  Computing initial MOCU (PyCUDA)", leave=False, unit="iter", ncols=100) as pbar:
+                for l in range(it_idx):
+                    it_temp_val[l] = MOCU_pycuda(K_max, w, N, deltaT, MReal, TReal, 
+                                                  aInitialLower.copy(), aInitialUpper.copy(), 0)
+                    pbar.update(1)
+        except (ImportError, RuntimeError) as e:
+            print(f"[WARNING] PyCUDA initial MOCU computation failed: {e}")
+            print("[WARNING] This may cause issues with ODE methods")
+            # Fallback: use zero (methods will handle their own computation)
+            it_temp_val.fill(0.0)
+        
+        MOCUInitial = np.mean(it_temp_val)
+        print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {time.time() - timeMOCU:.2f}s)")
+        
         method_pbar = tqdm(method_names, desc=f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}", 
                           leave=False, unit="method", ncols=100)
         for method_idx, method_name in enumerate(method_pbar):
             method_pbar.set_description(f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod} - {method_name}")
             
-            # Compute initial MOCU (lazy import to maintain separation for MPNN methods)
-            # IMPORTANT: For MPNN methods (iNN/NN), we compute initial MOCU BEFORE loading MPNN
-            # This ensures MOCU computation is done separately from MPNN operations
-            timeMOCU = time.time()
-            it_temp_val = np.zeros(it_idx)
-            
-            # Lazy import MOCU only when needed (for initial MOCU computation)
-            from src.core.mocu import MOCU
-            
-            # Ensure no MPNN operations are pending before MOCU usage
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-            except:
-                pass
-            
-            # Determine device for MOCU computation (use PyTorch CUDA, not PyCUDA to avoid segfaults)
-            import torch
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            
-            with tqdm(total=it_idx, desc="  Computing initial MOCU", leave=False, unit="iter", ncols=100) as pbar:
-                for l in range(it_idx):
-                    # Explicitly use PyTorch CUDA (not PyCUDA) to avoid segfaults
-                    it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, 
-                                         aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
-                    pbar.update(1)
-            MOCUInitial = np.mean(it_temp_val)
-            
-            # CRITICAL: Ensure all MOCU operations complete BEFORE initializing MPNN methods
-            # This maintains separate usage: MOCU operations finish, then MPNN loads
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-            except:
-                pass
-            
-            print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {time.time() - timeMOCU:.2f}s)")
-            
             # Initialize method
             method_start_time = time.time()
             
             try:
+                # Lazy import methods to avoid PyTorch CUDA initialization before PyCUDA
                 if method_name == 'iNN':
+                    from src.methods.inn import iNN_Method
                     # MPNN method: MOCU computation is already done, synchronized
                     # MPNN model loading will happen separately
                     method = iNN_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
                                        model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
                 
                 elif method_name == 'NN':
+                    from src.methods.nn import NN_Method
                     method = NN_Method(N, K_max, deltaT, MReal, TReal, it_idx,
                                       model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
                 
                 elif method_name == 'ODE':
+                    from src.methods.ode import ODE_Method
                     method = ODE_Method(N, K_max, deltaT, MReal, TReal, it_idx,
                                        MVirtual=MVirtual, TVirtual=TVirtual)
                 
                 elif method_name == 'iODE':
+                    from src.methods.ode import iODE_Method
                     method = iODE_Method(N, K_max, deltaT, MReal, TReal, it_idx,
                                         MVirtual=MVirtual, TVirtual=TVirtual)
                 
                 elif method_name == 'ENTROPY':
+                    from src.methods.entropy import ENTROPY_Method
                     method = ENTROPY_Method(N, K_max, deltaT, MReal, TReal, it_idx)
                 
                 elif method_name == 'RANDOM':
+                    from src.methods.random import RANDOM_Method
                     method = RANDOM_Method(N, K_max, deltaT, MReal, TReal, it_idx,
                                           seed=numberOfVaildSimulations)
                 
                 elif method_name == 'DAD':
+                    from src.methods.dad_mocu import DAD_MOCU_Method
                     # Try to find DAD policy in models/{config_name}/{timestamp}/dad_policy_N{N}.pth
                     # Or use environment variable if set
                     policy_path = None
@@ -262,13 +277,15 @@ if __name__ == '__main__':
                     continue
                 
                 # Run the method
+                # Pass initial MOCU (computed with PyCUDA before methods) for fallback
                 MOCUCurve, experimentSequence, timeComplexity = method.run_episode(
                     w_init=w,
                     a_lower_init=aInitialLower.copy(),
                     a_upper_init=aInitialUpper.copy(),
                     criticalK_init=criticalK,
                     isSynchronized_init=isSynchronized,
-                    update_cnt=update_cnt
+                    update_cnt=update_cnt,
+                    initial_mocu=MOCUInitial  # Pass initial MOCU for fallback
                 )
                 
                 total_time = time.time() - method_start_time

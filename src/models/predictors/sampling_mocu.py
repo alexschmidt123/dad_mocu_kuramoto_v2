@@ -2,11 +2,12 @@
 Sampling-Based MOCU Computation (Ground Truth).
 
 This is NOT a learned predictor - it's the exact (but slow) computation
-using PyTorch CUDA-accelerated Monte Carlo sampling.
+using PyCUDA-accelerated Monte Carlo sampling.
 
-NOTE: ODE method uses MOCU() directly from mocu.py, NOT this class.
-This class is primarily used for predictor evaluation/comparison in 
-compare_predictors.py as a ground truth baseline.
+NOTE: This class uses PyCUDA MOCU computation (mocu_pycuda.py), consistent
+with the reference implementation. This class is primarily used for 
+predictor evaluation/comparison in compare_predictors.py as a ground 
+truth baseline.
 
 This is what the paper calls "Sampling-based" in Table 1.
 """
@@ -21,9 +22,10 @@ class SamplingBasedMOCU:
         This is NOT a learned predictor - it's the exact (but slow) computation
         using PyTorch CUDA-accelerated integration.
     
-    NOTE: ODE method uses MOCU() directly from mocu.py, NOT this class.
-    This class is primarily used for predictor evaluation/comparison in 
-    compare_predictors.py as a ground truth baseline.
+    This class uses PyCUDA MOCU computation (mocu_pycuda.py), consistent
+    with the reference implementation. This class is primarily used for 
+    predictor evaluation/comparison in compare_predictors.py as a ground 
+    truth baseline.
     
     This is what the paper calls "Sampling-based" in Table 1.
     """
@@ -38,10 +40,10 @@ class SamplingBasedMOCU:
         NOTE: MOCU is imported lazily here (inside __init__) to avoid
         importing when this class is defined (module import).
         """
-        # LAZY IMPORT: Only import MOCU when an instance is created
+        # LAZY IMPORT: Only import MOCU_pycuda when an instance is created
         # Import happens here, not at module level
-        from ...core.mocu import MOCU
-        self.MOCU = MOCU
+        from ...core.mocu_pycuda import MOCU_pycuda
+        self.MOCU = MOCU_pycuda
         self.K_max = K_max
         self.h = h
         self.M = int(T / h)
@@ -66,7 +68,7 @@ class SamplingBasedMOCU:
         for i in range(num_iterations):
             mocu_vals[i] = self.MOCU(
                 self.K_max, w, N, self.h, self.M, self.T,
-                a_lower, a_upper, seed=0
+                a_lower, a_upper, 0
             )
         
         return np.mean(mocu_vals)

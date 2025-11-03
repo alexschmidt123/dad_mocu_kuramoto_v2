@@ -11,23 +11,26 @@ Available methods:
 - ENTROPY: Greedy uncertainty-based selection
 - RANDOM: Random baseline
 - DAD_MOCU: Deep Adaptive Design with MOCU objective
+
+CRITICAL: Methods are lazy-imported to avoid PyTorch CUDA initialization
+before PyCUDA can be used. Import methods directly from their modules:
+    from src.methods.random import RANDOM_Method
+    from src.methods.inn import iNN_Method
 """
 
 from .base import OEDMethod
-from .inn import iNN_Method
-from .nn import NN_Method
-from .ode import ODE_Method, iODE_Method
-from .entropy import ENTROPY_Method
-from .random import RANDOM_Method
-from .dad_mocu import DAD_MOCU_Method
+# NOTE: DO NOT import methods here - they trigger PyTorch import!
+# Import methods lazily from their modules when needed.
+# This allows PyCUDA to work before PyTorch CUDA is initialized.
 
 __all__ = [
     'OEDMethod',
-    'iNN_Method',
-    'NN_Method',
-    'ODE_Method',
-    'iODE_Method',
-    'ENTROPY_Method',
-    'RANDOM_Method',
-    'DAD_MOCU_Method',
+    # Methods should be imported directly from their modules
+    # 'iNN_Method',  # from src.methods.inn import iNN_Method
+    # 'NN_Method',   # from src.methods.nn import NN_Method
+    # 'ODE_Method',  # from src.methods.ode import ODE_Method
+    # 'iODE_Method', # from src.methods.ode import iODE_Method
+    # 'ENTROPY_Method', # from src.methods.entropy import ENTROPY_Method
+    # 'RANDOM_Method',  # from src.methods.random import RANDOM_Method
+    # 'DAD_MOCU_Method', # from src.methods.dad_mocu import DAD_MOCU_Method
 ]

@@ -60,8 +60,21 @@ echo -e "${GREEN}✓${NC} Configuration loaded: N=$N_GLOBAL"
 # Step 1: Generate MPNN data (uses PyTorch CUDA acceleration)
 echo ""
 echo -e "${GREEN}[Step 1/5]${NC} Generating MPNN training data..."
-bash "${PROJECT_ROOT}/scripts/bash/step1_generate_mocu_data.sh" "$CONFIG_FILE"
-TRAIN_FILE=$(cat /tmp/mocu_train_file_${CONFIG_NAME}.txt)
+
+# Check if data already exists in config folder
+DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/"
+TRAIN_FILE=$(find "$DATA_FOLDER" -name "*_${N}o_train.pth" -type f 2>/dev/null | head -1)
+
+if [ -n "$TRAIN_FILE" ]; then
+    echo -e "${BLUE}✓${NC} Found existing data file: $TRAIN_FILE"
+    echo -e "${BLUE}  Skipping data generation (data already exists)${NC}"
+    # Save train file path for next steps
+    echo "$TRAIN_FILE" > /tmp/mocu_train_file_${CONFIG_NAME}.txt
+else
+    echo -e "${YELLOW}  No existing data found, generating new data...${NC}"
+    bash "${PROJECT_ROOT}/scripts/bash/step1_generate_mocu_data.sh" "$CONFIG_FILE"
+    TRAIN_FILE=$(cat /tmp/mocu_train_file_${CONFIG_NAME}.txt)
+fi
 
 # Step 2: Train MPNN predictor (runs in separate process - uses PyTorch only)
 echo ""

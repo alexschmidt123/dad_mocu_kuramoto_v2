@@ -27,7 +27,7 @@ from src.models.predictors.mlp import MLPPredictor
 from src.models.predictors.cnn import CNNPredictor
 from src.models.predictors.mpnn_plus import MPNNPlusPredictor
 from src.models.predictors.sampling_mocu import SamplingBasedMOCU
-from src.core.mocu import MOCU
+# PyCUDA MOCU is used for all MOCU computation (mocu.py removed)
 
 
 def load_test_data(test_data_path):

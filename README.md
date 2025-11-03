@@ -13,43 +13,99 @@ This repository implements MOCU-OED framework using neural message passing to ac
 
 ## Installation
 
-### 1. Create Environment
+### Option 1: Automated Installation (Recommended)
+
+Use the provided installation script to create a conda environment with all dependencies:
 
 ```bash
-conda create -n mocu python=3.10
-conda activate mocu
+bash installation/create_mocu_env.sh
 ```
 
-### 2. Install CUDA Toolkit (for GPU acceleration)
+This script will:
+1. Create a conda environment named `dad_mocu`
+2. Install Python 3.10 and core dependencies
+3. Install PyTorch 2.4.0 with CUDA 12.1 support (via pip to avoid MKL linking issues)
+4. Install PyTorch Geometric and extensions
+5. Install PyCUDA for high-performance MOCU computation
+
+**Note**: The script uses pip-installed PyTorch to avoid MKL library conflicts (`iJIT_NotifyEvent` errors).
+
+### Option 2: Manual Installation via YAML
+
+Alternatively, create the environment from the YAML file:
 
 ```bash
-conda install -c nvidia cuda-toolkit=12.1
-nvcc --version
+conda env create -f installation/mocu_env.yaml
+conda activate dad_mocu
+
+# Install PyTorch Geometric extensions manually
+pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+    -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
 ```
 
-**Note**: CPU-only mode is supported but significantly slower.
+### Option 3: Manual Step-by-Step Installation
 
-### 3. Install PyTorch & PyTorch Geometric
+If you prefer manual control:
 
 ```bash
-# PyTorch with CUDA 12.1
-pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+# 1. Create environment
+conda create -n dad_mocu python=3.10 -y
+conda activate dad_mocu
 
-# PyTorch Geometric
-pip install torch-geometric==2.6.1
-pip install torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+# 2. Install core dependencies
+conda install -y -c conda-forge numpy scipy matplotlib tqdm pyyaml pandas pip setuptools wheel
+
+# 3. Install PyTorch with CUDA 12.1 (via pip to avoid MKL issues)
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# 4. Install PyTorch Geometric
+pip install torch-geometric
+
+# 5. Install PyG extensions
+pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+    -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
+
+# 6. Install CUDA Toolkit (required for PyCUDA kernel compilation)
+conda install -y -c nvidia cuda-toolkit=12.1
+
+# 7. Install PyCUDA
+pip install pycuda
+
+# 8. Install additional dependencies
+pip install openpyxl
 ```
 
-### 4. Install Dependencies
+### Verify Installation
+
+After installation, verify that everything works:
 
 ```bash
-pip install -r requirements.txt
+conda activate dad_mocu
+
+# Verify PyTorch
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+
+# Verify PyTorch Geometric
+python -c "import torch_geometric; print(f'PyTorch Geometric: {torch_geometric.__version__}')"
+
+# Verify PyCUDA
+python -c "import pycuda; print('PyCUDA: OK')"
+
+# Verify nvcc (CUDA compiler) - REQUIRED for PyCUDA kernel compilation
+nvcc --version || echo "⚠ WARNING: nvcc not found. Install with: conda install -c nvidia cuda-toolkit=12.1"
 ```
+
+**Note**: CPU-only mode is supported but significantly slower. GPU acceleration is recommended for production use.
 
 ## Project Structure
 
 ```
 dad_mocu_kuramoto_v2/
+├── installation/                 # Environment setup files
+│   ├── create_mocu_env.sh       # Automated installation script
+│   └── mocu_env.yaml            # Conda environment YAML file
+│
 ├── configs/                      # Configuration files
 │   ├── fast_config.yaml         # Quick verification (3-5 min)
 │   ├── N5_config.yaml           # 5-oscillator system
@@ -113,7 +169,7 @@ dad_mocu_kuramoto_v2/
 Run the complete experiment pipeline for a specific configuration:
 
 ```bash
-conda activate mocu
+conda activate dad_mocu
 bash run.sh configs/fast_config.yaml
 ```
 
@@ -129,7 +185,7 @@ This will:
 Quickly test if all components work:
 
 ```bash
-conda activate mocu
+conda activate dad_mocu
 bash run.sh configs/fast_config.yaml
 ```
 

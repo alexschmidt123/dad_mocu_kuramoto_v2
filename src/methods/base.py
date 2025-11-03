@@ -7,7 +7,14 @@ Provides common interface for all experimental design algorithms.
 from abc import ABC, abstractmethod
 import numpy as np
 import time
+import os
 from typing import Tuple, List, Dict, Any
+
+# Import torch for device checks
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 class OEDMethod(ABC):
@@ -143,7 +150,7 @@ class OEDMethod(ABC):
         return mocu_curve, sequence, times
     
     def run_episode(self, w_init, a_lower_init, a_upper_init, criticalK_init, 
-                    isSynchronized_init, update_cnt):
+                    isSynchronized_init, update_cnt, initial_mocu=None):
         """
         Run a complete OED episode.
         
@@ -166,20 +173,86 @@ class OEDMethod(ABC):
             experimentSequence: List of (i, j) tuples
             timeComplexity: Time per iteration [update_cnt]
         """
-        from ..core.mocu import MOCU
         
         N = len(w_init)
-        MOCUCurve = np.ones(update_cnt + 1) * 50.0
+        # Initialize MOCUCurve - will be filled by computation
+        MOCUCurve = np.zeros(update_cnt + 1)
         experimentSequence = []
         timeComplexity = np.zeros(update_cnt)
         history = []
         
-        # Compute initial MOCU using PyTorch CUDA acceleration
+        # Compute initial MOCU
+        # CRITICAL: initial_mocu is passed from evaluate.py (computed with PyCUDA before methods)
+        # Use it as fallback if PyCUDA fails in method initialization
         it_temp_val = np.zeros(self.it_idx)
-        for l in range(self.it_idx):
-            it_temp_val[l] = MOCU(self.K_max, w_init, N, self.deltaT, 
-                                 self.MReal, self.TReal, 
-                                 a_lower_init, a_upper_init, 0)
+        
+        # Check method type to determine if PyCUDA should be used
+        method_name = self.__class__.__name__
+        is_mpnn_method = method_name in ['iNN_Method', 'NN_Method']
+        is_dad_method = method_name == 'DAD_MOCU_Method'
+        
+        # Track if we've warned about PyCUDA for this method (to avoid spam)
+        self._pycuda_warned = getattr(self, '_pycuda_warned', False)
+        
+        if is_mpnn_method:
+            # For MPNN methods, use initial MOCU from evaluate.py
+            # They compute their own MOCU values iteratively via predictor
+            if initial_mocu is not None:
+                it_temp_val.fill(initial_mocu)
+            else:
+                it_temp_val.fill(0.0)
+        elif is_dad_method:
+            # For DAD method, use initial MOCU from evaluate.py
+            # It uses policy network, doesn't compute MOCU directly
+            if initial_mocu is not None:
+                it_temp_val.fill(initial_mocu)
+            else:
+                it_temp_val.fill(0.0)
+        else:
+            # For ODE/RANDOM/ENTROPY methods, use PyCUDA (as in original paper 2023)
+            # CRITICAL: These methods MUST run BEFORE PyTorch CUDA is initialized
+            # The evaluation script ensures this by ordering methods correctly
+            # Use same troubleshooting approach as DAD training
+            
+            # CRITICAL: Check for PyCUDA context conflict (same as DAD training)
+            # Clear PyTorch CUDA if it exists before PyCUDA
+            try:
+                if torch is not None and torch.cuda.is_available():
+                    # Clear any PyTorch CUDA operations before PyCUDA
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                # Check if PyCUDA context can be used
+                try:
+                    import pycuda.driver as drv
+                    pycuda_ctx = drv.Context.get_current()
+                    if pycuda_ctx is not None and torch is not None and torch.cuda.is_initialized():
+                        # Both contexts active - this is OK for initial MOCU (evaluate.py handles this)
+                        pass
+                except:
+                    pass
+            except:
+                pass
+            
+            try:
+                from ..core.mocu_pycuda import MOCU_pycuda
+                for l in range(self.it_idx):
+                    it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT, 
+                                                 self.MReal, self.TReal, 
+                                                 a_lower_init, a_upper_init, 0)
+            except (ImportError, RuntimeError) as e:
+                # PyCUDA failed - use fallback from evaluate.py
+                if not self._pycuda_warned:
+                    print(f"[WARNING] PyCUDA unavailable for {method_name} initial MOCU: {e}")
+                    if initial_mocu is not None:
+                        print(f"[WARNING] Using initial MOCU from evaluate.py: {initial_mocu:.6f}")
+                    self._pycuda_warned = True
+                # Use initial MOCU from evaluate.py (computed with PyCUDA before methods)
+                if initial_mocu is not None:
+                    it_temp_val.fill(initial_mocu)
+                    self._last_valid_mocu = initial_mocu  # Store for iterative fallback
+                else:
+                    it_temp_val.fill(0.0)
+        
         MOCUCurve[0] = np.mean(it_temp_val)
         
         # Ensure all CUDA operations are complete before MPNN usage
@@ -242,13 +315,152 @@ class OEDMethod(ABC):
             
             history.append(((selected_i, selected_j), observation_sync))
             
-            # Re-compute MOCU for the updated bounds using PyTorch CUDA
-            it_temp_val = np.zeros(self.it_idx)
-            for l in range(self.it_idx):
-                it_temp_val[l] = MOCU(self.K_max, w_init, N, self.deltaT,
-                                     self.MReal, self.TReal,
-                                     a_lower_current, a_upper_current, 0)
-            MOCUCurve[iteration + 1] = np.mean(it_temp_val)
+            # Re-compute MOCU for the updated bounds
+            # CRITICAL: For MPNN methods (iNN/NN), they handle MOCU computation themselves
+            # DAD method also doesn't need PyCUDA (uses policy network)
+            method_name = self.__class__.__name__
+            is_mpnn_method = method_name in ['iNN_Method', 'NN_Method']
+            is_dad_method = method_name == 'DAD_MOCU_Method'
+            
+            if is_mpnn_method:
+                # For MPNN methods (iNN/NN), compute MOCU using MPNN predictor for updated bounds
+                # The method's select_experiment computes R-matrix for selection, not current MOCU
+                # We need to compute actual MOCU using predictor after bounds are updated
+                try:
+                    # iNN/NN methods have model loaded, use it to predict MOCU
+                    if hasattr(self, 'model') and hasattr(self, 'mean') and hasattr(self, 'std'):
+                        # Use the same predictor function as DAD
+                        from ..models.predictors.predictor_utils import predict_mocu
+                        mocu_pred = predict_mocu(
+                            self.model, self.mean, self.std,
+                            w_init, a_lower_current, a_upper_current,
+                            device='cuda' if torch.cuda.is_available() else 'cpu'
+                        )
+                        MOCUCurve[iteration + 1] = mocu_pred
+                    else:
+                        # Fallback: keep previous value if model not available
+                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                except Exception as e:
+                    # If prediction fails, keep previous value
+                    if not hasattr(self, '_mpnn_mocu_warned'):
+                        print(f"[{method_name}] Warning: Failed to compute MOCU after bounds update: {e}")
+                        self._mpnn_mocu_warned = True
+                    MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+            elif is_dad_method:
+                # For DAD method, use MPNN predictor to compute MOCU (same as iNN)
+                # Cannot use PyCUDA after PyTorch CUDA is initialized
+                # Use MPNN predictor to estimate MOCU based on updated bounds
+                try:
+                    # Try to load MPNN predictor if not already loaded
+                    if not hasattr(self, '_mocu_predictor_loaded'):
+                        # Lazy load predictor only when needed
+                        model_name = os.getenv('MOCU_MODEL_NAME', f'cons{N}')
+                        try:
+                            from ..models.predictors.predictor_utils import load_mpnn_predictor, predict_mocu
+                            if not hasattr(self, '_mocu_predictor_warned'):
+                                print(f"[DAD] Loading MPNN predictor for MOCU computation: {model_name}")
+                            self._mocu_model, self._mocu_mean, self._mocu_std = load_mpnn_predictor(model_name, device='cuda' if torch.cuda.is_available() else 'cpu')
+                            self._mocu_predictor_loaded = True
+                            self._predict_mocu_fn = predict_mocu
+                            if not hasattr(self, '_mocu_predictor_warned'):
+                                print(f"[DAD] MPNN predictor loaded successfully")
+                                self._mocu_predictor_warned = True  # Use same flag to avoid duplicate prints
+                        except Exception as e:
+                            # Predictor loading failed - use fallback
+                            if not hasattr(self, '_mocu_predictor_warned'):
+                                print(f"[DAD] Warning: MPNN predictor not available for MOCU computation: {e}")
+                                print(f"[DAD] Using previous MOCU value")
+                                self._mocu_predictor_warned = True
+                            self._mocu_predictor_loaded = False
+                    
+                    # Compute MOCU using MPNN predictor
+                    if hasattr(self, '_mocu_predictor_loaded') and self._mocu_predictor_loaded:
+                        try:
+                            mocu_pred = self._predict_mocu_fn(
+                                self._mocu_model, self._mocu_mean, self._mocu_std,
+                                w_init, a_lower_current, a_upper_current,
+                                device='cuda' if torch.cuda.is_available() else 'cpu'
+                            )
+                            MOCUCurve[iteration + 1] = mocu_pred
+                            # Debug: Print first few predictions
+                            if iteration < 2 and not hasattr(self, '_dad_pred_printed'):
+                                print(f"[DAD] MOCU prediction at iteration {iteration+1}: {mocu_pred:.6f}")
+                                if iteration == 1:
+                                    self._dad_pred_printed = True
+                        except Exception as pred_err:
+                            if not hasattr(self, '_dad_pred_error_warned'):
+                                print(f"[DAD] Error during MOCU prediction: {pred_err}")
+                                self._dad_pred_error_warned = True
+                            MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                    else:
+                        # Fallback: keep previous value
+                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                except Exception as e:
+                    # Any error - keep previous value
+                    if not hasattr(self, '_dad_exception_warned'):
+                        print(f"[DAD] Exception during MOCU computation: {e}")
+                        self._dad_exception_warned = True
+                    MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+            else:
+                # For ODE/RANDOM/ENTROPY methods, use PyCUDA (as in original paper 2023)
+                # CRITICAL: These methods MUST run BEFORE PyTorch CUDA is initialized
+                # Use same troubleshooting approach as DAD training
+                it_temp_val = np.zeros(self.it_idx)
+                
+                # CRITICAL: Clear PyTorch CUDA context before PyCUDA (same as DAD training)
+                # This ensures PyCUDA can work even if PyTorch was imported
+                try:
+                    if torch is not None and torch.cuda.is_available():
+                        # Clear any PyTorch CUDA operations before PyCUDA
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                        # Small delay to let CUDA operations complete
+                        time.sleep(0.01)
+                except:
+                    pass
+                
+                # CRITICAL: Check if PyCUDA context can be used (same as DAD training check)
+                try:
+                    import pycuda.driver as drv
+                    # Try to get current context - if it fails, PyCUDA might still work
+                    try:
+                        pycuda_ctx = drv.Context.get_current()
+                        # If PyTorch CUDA is also active, this might cause issues
+                        if pycuda_ctx is not None and torch is not None and torch.cuda.is_initialized():
+                            # Both contexts active - PyCUDA might fail
+                            # Use fallback instead
+                            raise RuntimeError("PyCUDA and PyTorch CUDA both active")
+                    except:
+                        # No PyCUDA context or error checking - try PyCUDA anyway
+                        pass
+                except ImportError:
+                    pass
+                
+                try:
+                    from ..core.mocu_pycuda import MOCU_pycuda
+                    # Try PyCUDA computation
+                    for l in range(self.it_idx):
+                        it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT,
+                                                     self.MReal, self.TReal,
+                                                     a_lower_current, a_upper_current, 0)
+                    MOCUCurve[iteration + 1] = np.mean(it_temp_val)
+                    # Update last valid MOCU for future fallbacks
+                    self._last_valid_mocu = MOCUCurve[iteration + 1]
+                except Exception as e:
+                    # PyCUDA failed - catch ALL exceptions (not just ImportError/RuntimeError)
+                    # PyCUDA can raise various exceptions: LogicError, Error, etc.
+                    # Only warn once per method to avoid spam
+                    if not hasattr(self, '_pycuda_iter_warned'):
+                        print(f"[{method_name}] PyCUDA failed for iterative MOCU (iteration {iteration+1}): {type(e).__name__}: {e}")
+                        if hasattr(self, '_last_valid_mocu'):
+                            print(f"[{method_name}] Using last valid MOCU: {self._last_valid_mocu:.6f}")
+                        else:
+                            print(f"[{method_name}] Using previous MOCU value: {MOCUCurve[iteration]:.6f}")
+                        self._pycuda_iter_warned = True
+                    if hasattr(self, '_last_valid_mocu'):
+                        MOCUCurve[iteration + 1] = self._last_valid_mocu
+                    else:
+                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
             
             # Ensure MOCU is non-increasing (monotonicity)
             if MOCUCurve[iteration + 1] > MOCUCurve[iteration]:

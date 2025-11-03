@@ -16,10 +16,24 @@ import multiprocessing as mp
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.core.mocu import MOCU
+# PyCUDA MOCU is used for all MOCU computation (mocu.py removed)
 import numpy as np
 import random
 import torch  # Need torch for device detection at module level
+import os
+
+# PyCUDA is REQUIRED for data generation to avoid segfaults with PyTorch
+# Data generation should run in isolation, separate from PyTorch workflows
+try:
+    from src.core.mocu_pycuda import MOCU_pycuda
+    PYCUDA_MOCU_AVAILABLE = True
+    print("[INFO] PyCUDA MOCU enabled (REQUIRED for data generation)")
+except (ImportError, RuntimeError) as e:
+    PYCUDA_MOCU_AVAILABLE = False
+    print(f"[ERROR] PyCUDA is REQUIRED for data generation but not available: {e}")
+    print(f"[ERROR] Please install PyCUDA: pip install pycuda")
+    print(f"[ERROR] Data generation cannot proceed without PyCUDA.")
+    sys.exit(1)
 
 def generate_coupling_type1(w, N):
     """
@@ -107,24 +121,9 @@ def generate_single_sample(args_tuple):
             a[i, j] = a_lower_bound[i, j] + 0.5 * (a_upper_bound[i, j] - a_lower_bound[i, j])
             a[j, i] = a[i, j]
     
-    # Use GPU sync detection if available (much faster)
-    # Import sync detection - prefer GPU version if available
-    if device == 'cuda' and torch.cuda.is_available():
-        # Use internal GPU version for speed
-        from src.core.mocu import _mocu_comp_torch
-        # Debug: Verify GPU usage
-        debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
-        if debug_gpu and worker_id == 0:  # Only print from first worker
-            print(f"[DEBUG] GPU sync check: device={device}, CUDA available={torch.cuda.is_available()}")
-            print(f"[DEBUG] GPU name: {torch.cuda.get_device_name(0)}")
-        init_sync_check = _mocu_comp_torch(w, h, N, M, a, device=device)
-        if debug_gpu and worker_id == 0:
-            # Verify tensor is on GPU
-            if hasattr(torch, 'cuda') and torch.cuda.is_available():
-                print(f"[DEBUG] GPU memory allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
-    else:
-        from src.core.sync_detection import mocu_comp
-        init_sync_check = mocu_comp(w, h, N, M, a)
+    # Use CPU sync check (fast enough, avoids CUDA context issues)
+    from src.core.sync_detection import mocu_comp
+    init_sync_check = mocu_comp(w, h, N, M, a)
     
     if init_sync_check == 1:
         return None  # Skip synchronized systems
@@ -134,32 +133,24 @@ def generate_single_sample(args_tuple):
     # GPU accelerates RK4 integration within each binary search iteration
     # For K_max=20480: ~20480 samples * ~25 binary searches * 640 RK4 steps = significant computation
     
+    # PyCUDA is REQUIRED for data generation
+    if not PYCUDA_MOCU_AVAILABLE:
+        raise RuntimeError("PyCUDA is required for data generation but not available")
+    
     # Debug: Check GPU usage
     debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
     if debug_gpu and worker_id == 0:  # Only print from first worker
-        print(f"[DEBUG] Starting MOCU computation with device={device}")
-        if device == 'cuda' and torch.cuda.is_available():
-            print(f"[DEBUG] GPU: {torch.cuda.get_device_name(0)}")
-            print(f"[DEBUG] GPU memory before MOCU: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+        print(f"[DEBUG] Starting MOCU computation with PyCUDA (required for data generation)")
         start_time = time.time()
     
-    MOCU_val1 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0, device=device)
+    # Always use PyCUDA for data generation (required, no PyTorch option)
+    MOCU_val1 = MOCU_pycuda(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0)
+    MOCU_val2 = MOCU_pycuda(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0)
     
-    # Sync GPU before second computation
-    if device == 'cuda' and torch.cuda.is_available():
-        torch.cuda.synchronize()
-        if debug_gpu and worker_id == 0:
-            elapsed1 = time.time() - start_time
-            print(f"[DEBUG] First MOCU computation took {elapsed1:.2f}s on GPU")
-            print(f"[DEBUG] GPU memory after first MOCU: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+    if debug_gpu and worker_id == 0:
+        elapsed = time.time() - start_time
+        print(f"[DEBUG] Both MOCU computations completed in {elapsed:.2f}s")
     
-    MOCU_val2 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0, device=device)
-    
-    if debug_gpu and worker_id == 0 and device == 'cuda' and torch.cuda.is_available():
-        elapsed2 = time.time() - start_time
-        print(f"[DEBUG] Second MOCU computation took {elapsed2 - elapsed1:.2f}s on GPU")
-        print(f"[DEBUG] Total GPU time: {elapsed2:.2f}s")
-        print(f"[DEBUG] GPU memory after both MOCU: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
     mean_MOCU = (MOCU_val1 + MOCU_val2) / 2
     
     data_dic = {
@@ -291,7 +282,8 @@ def main():
     print(f"  - Samples per type: {samples_per_type}")
     print(f"  - Expected total: {samples_per_type * 2} (some may be filtered)")
     print(f"  - Monte Carlo samples (K_max): {K_max}")
-    print(f"  - Device: {device.upper()}")
+    print(f"  - Backend: PyCUDA (REQUIRED for data generation)")
+    print(f"  - Note: PyCUDA is isolated from PyTorch to prevent segfaults")
     
     # GPU detection and verification
     if device == 'cuda' and torch.cuda.is_available():

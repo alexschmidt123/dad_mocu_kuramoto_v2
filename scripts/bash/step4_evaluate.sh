@@ -22,10 +22,17 @@ DAD_POLICY_PATH=$(cat /tmp/dad_policy_path_${CONFIG_NAME}.txt 2>/dev/null || ech
 
 # Parse config parameters
 N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
-UPDATE_CNT=$(grep -A 3 "^experiment:" $CONFIG_FILE | grep "update_count:" | awk '{print $2}')
-IT_IDX=$(grep -A 3 "^experiment:" $CONFIG_FILE | grep "it_idx:" | awk '{print $2}')
-K_MAX=$(grep -A 3 "^experiment:" $CONFIG_FILE | grep "K_max:" | awk '{print $2}')
-NUM_SIMULATIONS=$(grep -A 3 "^experiment:" $CONFIG_FILE | grep "num_simulations:" | awk '{print $2}')
+UPDATE_CNT=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "update_count:" | awk '{print $2}')
+IT_IDX=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "it_idx:" | awk '{print $2}')
+K_MAX=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "K_max:" | awk '{print $2}')
+NUM_SIMULATIONS=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "num_simulations:" | awk '{print $2}')
+
+# Validate and set defaults if empty
+[ -z "$N" ] && N=5
+[ -z "$UPDATE_CNT" ] && UPDATE_CNT=10
+[ -z "$IT_IDX" ] && IT_IDX=10
+[ -z "$K_MAX" ] && K_MAX=20480
+[ -z "$NUM_SIMULATIONS" ] && NUM_SIMULATIONS=10
 
 # Parse methods from config
 METHODS=$(grep -A 20 "^  methods:" $CONFIG_FILE | grep '    - "' | sed 's/.*"\(.*\)".*/\1/' | grep -v '^#' | tr '\n' ',' | sed 's/,$//')

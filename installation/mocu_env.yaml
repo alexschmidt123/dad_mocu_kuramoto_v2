@@ -1,0 +1,35 @@
+name: dad_mocu
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - matplotlib
+  - tqdm
+  - pyyaml
+  - pandas
+  - pip
+  - setuptools
+  - wheel
+  - cuda-toolkit=12.1
+  - pip:
+    # PyTorch via pip (pre-built, avoids MKL linking issues)
+    - torch==2.4.0
+    - torchvision==0.19.0
+    - torchaudio==2.4.0
+    - --index-url https://download.pytorch.org/whl/cu121
+    # PyTorch Geometric
+    - torch-geometric>=2.6.0
+    # PyG extensions (will be installed manually matching PyTorch version)
+    - torch-scatter -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
+    - torch-sparse -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
+    - torch-cluster -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
+    - torch-spline-conv -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
+    # PyCUDA
+    - pycuda>=2024.1
+    # Excel file support for pandas
+    - openpyxl>=3.0.0
+

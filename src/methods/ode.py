@@ -18,7 +18,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
-from src.core.mocu import MOCU
+
+# Use PyCUDA for ODE methods (required to avoid segfaults with PyTorch)
+try:
+    from src.core.mocu_pycuda import MOCU_pycuda as MOCU_pycuda_impl
+    PYCUDA_AVAILABLE = True
+except (ImportError, RuntimeError):
+    PYCUDA_AVAILABLE = False
+    print("[WARNING] PyCUDA not available for ODE methods. ODE methods will fail.")
 
 
 class ODE_Method(OEDMethod):
@@ -45,15 +52,15 @@ class ODE_Method(OEDMethod):
             TVirtual: Time horizon for prediction (defaults to TReal)
             gpu_id: GPU device ID (for explicit CUDA usage, avoids PyCUDA conflicts)
         """
-        import torch
         super().__init__(N, K_max, deltaT, MReal, TReal, it_idx)
         self.MVirtual = MVirtual if MVirtual is not None else MReal
         self.TVirtual = TVirtual if TVirtual is not None else TReal
         self.R_matrix = np.zeros((N, N))
-        # Use PyTorch CUDA explicitly (not PyCUDA) to avoid segfaults
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        print(f"[ODE] Initialized (static version, using PyTorch CUDA on {self.device})")
+        if not PYCUDA_AVAILABLE:
+            raise RuntimeError("PyCUDA is REQUIRED for ODE methods but not available. Install with: pip install pycuda")
+        
+        print(f"[ODE] Initialized (static version, using PyCUDA)")
     
     def _compute_expected_mocu_matrix(self, w, a_lower_bounds, a_upper_bounds):
         """
@@ -87,13 +94,13 @@ class ODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for synchronized scenario (using PyTorch CUDA, not PyCUDA)
+                # Compute MOCU for synchronized scenario (using PyCUDA)
                 mocu_vals_syn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_syn[l] = MOCU(
+                    mocu_vals_syn[l] = MOCU_pycuda_impl(
                         self.K_max, w, self.N, self.deltaT, 
                         self.MVirtual, self.TVirtual,
-                        a_lower_syn, a_upper_syn, seed=0, device=self.device
+                        a_lower_syn, a_upper_syn, seed=0
                     )
                 MOCU_syn = np.mean(mocu_vals_syn)
                 
@@ -108,13 +115,13 @@ class ODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for non-synchronized scenario (using PyTorch CUDA, not PyCUDA)
+                # Compute MOCU for non-synchronized scenario (using PyCUDA)
                 mocu_vals_nonsyn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_nonsyn[l] = MOCU(
+                    mocu_vals_nonsyn[l] = MOCU_pycuda_impl(
                         self.K_max, w, self.N, self.deltaT,
                         self.MVirtual, self.TVirtual,
-                        a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
+                        a_lower_nonsyn, a_upper_nonsyn, seed=0
                     )
                 MOCU_nonsyn = np.mean(mocu_vals_nonsyn)
                 
@@ -182,14 +189,14 @@ class iODE_Method(OEDMethod):
             TVirtual: Time horizon for prediction (defaults to TReal)
             gpu_id: GPU device ID (for explicit CUDA usage, avoids PyCUDA conflicts)
         """
-        import torch
         super().__init__(N, K_max, deltaT, MReal, TReal, it_idx)
         self.MVirtual = MVirtual if MVirtual is not None else MReal
         self.TVirtual = TVirtual if TVirtual is not None else TReal
-        # Use PyTorch CUDA explicitly (not PyCUDA) to avoid segfaults
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        print(f"[iODE] Initialized (iterative version, using PyTorch CUDA on {self.device})")
+        if not PYCUDA_AVAILABLE:
+            raise RuntimeError("PyCUDA is REQUIRED for iODE methods but not available. Install with: pip install pycuda")
+        
+        print(f"[iODE] Initialized (iterative version, using PyCUDA)")
     
     def _compute_expected_mocu_matrix(self, w, a_lower_bounds, a_upper_bounds):
         """
@@ -218,13 +225,13 @@ class iODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for synchronized scenario (using PyTorch CUDA, not PyCUDA)
+                # Compute MOCU for synchronized scenario (using PyCUDA)
                 mocu_vals_syn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_syn[l] = MOCU(
+                    mocu_vals_syn[l] = MOCU_pycuda_impl(
                         self.K_max, w, self.N, self.deltaT,
                         self.MVirtual, self.TVirtual,
-                        a_lower_syn, a_upper_syn, seed=0, device=self.device
+                        a_lower_syn, a_upper_syn, seed=0
                     )
                 MOCU_syn = np.mean(mocu_vals_syn)
                 
@@ -239,13 +246,13 @@ class iODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for non-synchronized scenario (using PyTorch CUDA, not PyCUDA)
+                # Compute MOCU for non-synchronized scenario (using PyCUDA)
                 mocu_vals_nonsyn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_nonsyn[l] = MOCU(
+                    mocu_vals_nonsyn[l] = MOCU_pycuda_impl(
                         self.K_max, w, self.N, self.deltaT,
                         self.MVirtual, self.TVirtual,
-                        a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
+                        a_lower_nonsyn, a_upper_nonsyn, seed=0
                     )
                 MOCU_nonsyn = np.mean(mocu_vals_nonsyn)
                 

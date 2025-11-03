@@ -4,10 +4,17 @@ Generate trajectory data for training DAD (Deep Adaptive Design) policy network.
 This script generates sequential decision trajectories for REINFORCE training.
 Uses random expert (fast) - REINFORCE doesn't need expert labels, only a_true.
 
-IMPORTANT: This script does NOT compute MOCU values.
+OPTION 1: Pre-compute MOCU (recommended)
+- Use --use-mpnn-predictor to compute and save terminal MOCU values during data generation
+- Training will use pre-computed MOCU values (no MPNN predictor needed during training)
+- Avoids CUDA context conflicts and makes training faster
+
+OPTION 2: Compute MOCU during training
+- Don't use --use-mpnn-predictor
 - MOCU is computed DURING training (using MPNN predictor) as the reward signal
-- This script only generates trajectory structures: (w, a_true, states, actions)
-- It uses mocu_comp() (CPU-based sync detection) to check system stability, NOT MOCU computation
+- Requires MPNN predictor during training (can cause CUDA conflicts)
+
+It uses mocu_comp() (CPU-based sync detection) to check system stability, NOT MOCU computation
 """
 
 import sys
@@ -106,7 +113,7 @@ def update_bounds(a_lower, a_upper, i, j, observation, w):
     return a_lower_new, a_upper_new
 
 
-def generate_trajectory(N, K, verbose=False):
+def generate_trajectory(N, K, verbose=False, mpnn_predictor=None, mocu_mean=None, mocu_std=None):
     """
     Generate a single trajectory using random expert policy.
     
@@ -116,6 +123,9 @@ def generate_trajectory(N, K, verbose=False):
         N: Number of oscillators
         K: Number of sequential experiments
         verbose: Print progress
+        mpnn_predictor: Optional MPNN predictor model to compute terminal MOCU
+        mocu_mean: Optional normalization mean for MPNN predictor
+        mocu_std: Optional normalization std for MPNN predictor
     
     Returns:
         trajectory: Dictionary containing the full trajectory
@@ -170,6 +180,25 @@ def generate_trajectory(N, K, verbose=False):
         if verbose:
             print(f"Step {step+1}: Selected ({i_selected},{j_selected}), Obs={observation}")
     
+    # Compute terminal MOCU if predictor provided
+    terminal_MOCU = None
+    if mpnn_predictor is not None:
+        try:
+            from src.models.predictors.predictor_utils import predict_mocu
+            # Use final bounds for terminal MOCU
+            terminal_MOCU = predict_mocu(mpnn_predictor, mocu_mean, mocu_std, w, a_lower, a_upper, device='cuda')
+            # Ensure it's a Python float
+            if hasattr(terminal_MOCU, 'item'):
+                terminal_MOCU = terminal_MOCU.item()
+            terminal_MOCU = float(terminal_MOCU)
+        except Exception as e:
+            print(f"Warning: Failed to compute terminal MOCU: {e}")
+            terminal_MOCU = None
+    
+    # Add terminal MOCU to trajectory if computed
+    if terminal_MOCU is not None:
+        trajectory['terminal_MOCU'] = terminal_MOCU
+    
     return trajectory
 
 
@@ -181,6 +210,11 @@ def main():
     # Note: Removed expert-type and K-max - always use random expert for REINFORCE
     parser.add_argument('--output-dir', type=str, default='../data/', help='Output directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--use-mpnn-predictor', action='store_true',
+                       help='Pre-compute terminal MOCU using MPNN predictor (recommended). '
+                            'Training can then use pre-computed values instead of calling predictor.')
+    parser.add_argument('--mpnn-model-name', type=str, default=None,
+                       help='MPNN model name for MOCU computation (required if --use-mpnn-predictor)')
     args = parser.parse_args()
     
     # Set random seed
@@ -198,7 +232,37 @@ def main():
     print(f"  - Sequential experiments (K): {args.K}")
     print(f"  - Number of episodes: {args.num_episodes}")
     print(f"  - Expert policy: random (for REINFORCE training)")
+    print(f"  - Pre-compute MOCU: {'Yes (using MPNN predictor)' if args.use_mpnn_predictor else 'No (will compute during training)'}")
     print("=" * 80)
+    
+    # Load MPNN predictor if requested
+    mpnn_predictor = None
+    mocu_mean = None
+    mocu_std = None
+    
+    if args.use_mpnn_predictor:
+        if args.mpnn_model_name is None:
+            # Try to auto-detect from environment variable
+            import os
+            args.mpnn_model_name = os.getenv('MOCU_MODEL_NAME')
+            if args.mpnn_model_name is None:
+                # Try default naming convention
+                args.mpnn_model_name = f'cons{args.N}'
+                print(f"[INFO] No model name provided, using default: {args.mpnn_model_name}")
+        
+        try:
+            print(f"[INFO] Loading MPNN predictor: {args.mpnn_model_name}")
+            from src.models.predictors.predictor_utils import load_mpnn_predictor
+            mpnn_predictor, mocu_mean, mocu_std = load_mpnn_predictor(
+                model_name=args.mpnn_model_name, 
+                device='cuda'
+            )
+            mpnn_predictor.eval()
+            print(f"[INFO] ✓ MPNN predictor loaded successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to load MPNN predictor: {e}")
+            print(f"[ERROR] Cannot pre-compute MOCU. Exiting.")
+            return
     
     trajectories = []
     
@@ -208,7 +272,10 @@ def main():
         trajectory = generate_trajectory(
             N=args.N,
             K=args.K,
-            verbose=False
+            verbose=False,
+            mpnn_predictor=mpnn_predictor,
+            mocu_mean=mocu_mean,
+            mocu_std=mocu_std
         )
         
         if trajectory is not None:
@@ -227,15 +294,25 @@ def main():
     
     # Save data
     output_file = output_dir / f'dad_trajectories_N{args.N}_K{args.K}_random.pth'
+    
+    # Check if MOCU values were computed
+    has_mocu = any('terminal_MOCU' in traj for traj in trajectories)
+    
     torch.save({
         'trajectories': trajectories,
         'config': {
             'N': args.N,
             'K': args.K,
             'expert_type': 'random',
-            'num_episodes': len(trajectories)
+            'num_episodes': len(trajectories),
+            'has_precomputed_mocu': has_mocu,
+            'mpnn_model_used': args.mpnn_model_name if args.use_mpnn_predictor else None
         }
     }, output_file)
+    
+    if has_mocu:
+        print(f"[INFO] ✓ Terminal MOCU values pre-computed and saved")
+        print(f"[INFO]   Training can use pre-computed values (no MPNN predictor needed during training)")
     
     print(f"✓ Saved to: {output_file}")
     
