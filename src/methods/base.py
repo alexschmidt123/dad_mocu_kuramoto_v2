@@ -241,36 +241,44 @@ class OEDMethod(ABC):
 
         MOCUCurve[0] = np.mean(it_temp_val)
         
-        # Ensure all CUDA operations are complete before MPNN usage
-        # Lazy import torch only when needed
-        try:
-            if torch is None:
-                import torch as _torch
-                globals()['torch'] = _torch
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()  # Wait for CUDA kernels to finish
-        except:
-            pass
-        
-        a_lower_current = a_lower_init.copy()
-        a_upper_current = a_upper_init.copy()
-        
         # Sequential experimental design
         # Get method name early for debug prints
         method_name = self.__class__.__name__
         is_mpnn_method = method_name in ['iNN_Method', 'NN_Method']
         is_dad_method = method_name == 'DAD_MOCU_Method'
         
+        # CRITICAL: Only import torch for PyTorch-based methods (iNN, NN, DAD)
+        # Do NOT import torch for PyCUDA methods (RANDOM, ODE, ENTROPY) - it will initialize PyTorch CUDA!
+        if is_mpnn_method or is_dad_method:
+            # Ensure all CUDA operations are complete before MPNN usage
+            # Lazy import torch only when needed (for PyTorch methods)
+            try:
+                if torch is None:
+                    import torch as _torch
+                    globals()['torch'] = _torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()  # Wait for CUDA kernels to finish
+            except:
+                pass
+        
+        a_lower_current = a_lower_init.copy()
+        a_upper_current = a_upper_init.copy()
+        
         for iteration in range(update_cnt):
             iterationStartTime = time.time()
             
-            # Ensure all CUDA operations are complete before MPNN usage
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()  # Wait for any pending CUDA operations
-            except:
-                pass
+            # CRITICAL: Only synchronize CUDA for PyTorch-based methods
+            # Do NOT import torch for PyCUDA methods (RANDOM, ODE, ENTROPY)
+            if is_mpnn_method or is_dad_method:
+                # Ensure all CUDA operations are complete before MPNN usage
+                try:
+                    if torch is None:
+                        import torch as _torch
+                        globals()['torch'] = _torch
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()  # Wait for any pending CUDA operations
+                except:
+                    pass
             
             # Select experiment using the method's specific logic
             # For iNN/NN: This uses MPNN predictor
@@ -279,16 +287,18 @@ class OEDMethod(ABC):
                 criticalK_init, isSynchronized_init, history
             )
             
-            # Ensure MPNN operations are complete before next iteration
-            # Lazy import torch only when needed
-            try:
-                if torch is None:
-                    import torch as _torch
-                    globals()['torch'] = _torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()  # Wait for MPNN forward passes to complete
-            except:
-                pass
+            # CRITICAL: Only synchronize CUDA for PyTorch-based methods
+            if is_mpnn_method or is_dad_method:
+                # Ensure MPNN operations are complete before next iteration
+                # Lazy import torch only when needed
+                try:
+                    if torch is None:
+                        import torch as _torch
+                        globals()['torch'] = _torch
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()  # Wait for MPNN forward passes to complete
+                except:
+                    pass
             
             iterationTime = time.time() - iterationStartTime
             timeComplexity[iteration] = iterationTime
