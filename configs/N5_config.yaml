@@ -33,12 +33,12 @@ experiment:
   it_idx: 10           # MOCU averaging iterations
   K_max: 20480
   methods:
-    - "iNN"       # Iterative MPNN (best accuracy)
-    - "NN"        # Static MPNN (faster)
-    - "ODE"       # Sampling-based (exact but slow)
-    - "ENTROPY"   # Greedy uncertainty
-    - "RANDOM"    # Random baseline
-    - "DAD"       # Deep Adaptive Design
+    - "RANDOM"    # PyCUDA methods FIRST
+    - "ENTROPY"
+    - "ODE"
+    - "iNN"       # PyTorch methods AFTER
+    - "NN"
+    - "DAD"
   
   # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
   # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)
