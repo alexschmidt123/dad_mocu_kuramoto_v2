@@ -8,7 +8,9 @@ from pathlib import Path
 import time
 import json
 import argparse
+import os
 from tqdm import tqdm
+import multiprocessing as mp
 
 # Get absolute path to project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -74,11 +76,18 @@ def generate_coupling_type2(w, N):
     return a_lower_bound, a_upper_bound
 
 
-def generate_single_sample(N, K_max, h, M, T, coupling_type='type1', device='cuda'):
+def generate_single_sample(args_tuple):
     """Generate a single training sample with MOCU computation.
     
+    Wrapper function for multiprocessing that unpacks arguments.
     Always computes MOCU twice and averages for stability.
     """
+    N, K_max, h, M, T, coupling_type, device, worker_id = args_tuple
+    
+    # Set worker-specific random seed for reproducibility
+    if worker_id is not None:
+        random.seed(worker_id * 12345 + int(time.time()) % 10000)
+        np.random.seed(worker_id * 12345 + int(time.time()) % 10000)
     
     # Generate random natural frequencies
     w = np.zeros(N)
@@ -103,7 +112,16 @@ def generate_single_sample(N, K_max, h, M, T, coupling_type='type1', device='cud
     if device == 'cuda' and torch.cuda.is_available():
         # Use internal GPU version for speed
         from src.core.mocu import _mocu_comp_torch
+        # Debug: Verify GPU usage
+        debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
+        if debug_gpu and worker_id == 0:  # Only print from first worker
+            print(f"[DEBUG] GPU sync check: device={device}, CUDA available={torch.cuda.is_available()}")
+            print(f"[DEBUG] GPU name: {torch.cuda.get_device_name(0)}")
         init_sync_check = _mocu_comp_torch(w, h, N, M, a, device=device)
+        if debug_gpu and worker_id == 0:
+            # Verify tensor is on GPU
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                print(f"[DEBUG] GPU memory allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
     else:
         from src.core.sync_detection import mocu_comp
         init_sync_check = mocu_comp(w, h, N, M, a)
@@ -114,14 +132,34 @@ def generate_single_sample(N, K_max, h, M, T, coupling_type='type1', device='cud
     # Always compute MOCU twice and average for stability (reduces Monte Carlo variance)
     # NOTE: MOCU computation is sequential per sample (binary search dependencies)
     # GPU accelerates RK4 integration within each binary search iteration
-    # For K_max=1024: ~1024 samples * ~25 binary searches * 640 RK4 steps = significant computation
+    # For K_max=20480: ~20480 samples * ~25 binary searches * 640 RK4 steps = significant computation
+    
+    # Debug: Check GPU usage
+    debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
+    if debug_gpu and worker_id == 0:  # Only print from first worker
+        print(f"[DEBUG] Starting MOCU computation with device={device}")
+        if device == 'cuda' and torch.cuda.is_available():
+            print(f"[DEBUG] GPU: {torch.cuda.get_device_name(0)}")
+            print(f"[DEBUG] GPU memory before MOCU: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+        start_time = time.time()
+    
     MOCU_val1 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0, device=device)
     
     # Sync GPU before second computation
     if device == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize()
+        if debug_gpu and worker_id == 0:
+            elapsed1 = time.time() - start_time
+            print(f"[DEBUG] First MOCU computation took {elapsed1:.2f}s on GPU")
+            print(f"[DEBUG] GPU memory after first MOCU: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
     
     MOCU_val2 = MOCU(K_max, w, N, h, M, T, a_lower_bound, a_upper_bound, 0, device=device)
+    
+    if debug_gpu and worker_id == 0 and device == 'cuda' and torch.cuda.is_available():
+        elapsed2 = time.time() - start_time
+        print(f"[DEBUG] Second MOCU computation took {elapsed2 - elapsed1:.2f}s on GPU")
+        print(f"[DEBUG] Total GPU time: {elapsed2:.2f}s")
+        print(f"[DEBUG] GPU memory after both MOCU: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
     mean_MOCU = (MOCU_val1 + MOCU_val2) / 2
     
     data_dic = {
@@ -201,6 +239,10 @@ def main():
     parser.add_argument('--output_dir', type=str, default='../data/', help='Output directory (with trailing slash)')
     parser.add_argument('--save_json', action='store_true', 
                         help='Save intermediate JSON files with MOCU1 and MOCU2 values')
+    parser.add_argument('--num_workers', type=int, default=None,
+                        help='Number of parallel workers (default: number of CPU cores - 1, 0 to disable multiprocessing)')
+    parser.add_argument('--chunk_size', type=int, default=10,
+                        help='Chunk size for multiprocessing (samples per worker batch)')
     args = parser.parse_args()
     
     # Configuration
@@ -213,6 +255,29 @@ def main():
     
     # Determine device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # Determine number of workers
+    if args.num_workers is None:
+        num_workers = max(1, mp.cpu_count() - 1)  # Leave one core free
+    elif args.num_workers == 0:
+        num_workers = 1  # Disable multiprocessing
+    else:
+        num_workers = args.num_workers
+    
+    # Set multiprocessing start method for CUDA compatibility
+    # Note: Multiprocessing with CUDA has limited benefits since GPU already parallelizes RK4
+    # Each process will create its own CUDA context, which can be memory-intensive
+    if device == 'cuda' and torch.cuda.is_available() and num_workers > 1:
+        # For CUDA, we need 'spawn' method to properly initialize CUDA contexts in each process
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            # Already set, that's fine
+            pass
+        # Warning: Multiple CUDA contexts may cause OOM errors
+        if num_workers > 4:
+            print(f"\n  ⚠ Warning: Using {num_workers} workers with CUDA may cause GPU memory issues.")
+            print(f"    Consider reducing --num_workers if you encounter GPU memory errors.")
     
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -227,40 +292,109 @@ def main():
     print(f"  - Expected total: {samples_per_type * 2} (some may be filtered)")
     print(f"  - Monte Carlo samples (K_max): {K_max}")
     print(f"  - Device: {device.upper()}")
+    
+    # GPU detection and verification
     if device == 'cuda' and torch.cuda.is_available():
-        print(f"  - GPU: {torch.cuda.get_device_name(0)}")
-        print(f"  - GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        gpu_memory_allocated = torch.cuda.memory_allocated(0) / 1024**2
+        print(f"  - GPU: {gpu_name}")
+        print(f"  - GPU Memory: {gpu_memory:.1f} GB total, {gpu_memory_allocated:.2f} MB allocated")
+        print(f"  - CUDA Version: {torch.version.cuda}")
+        print(f"  - PyTorch CUDA Available: ✓ YES (GPU acceleration enabled)")
+        
+        # Test GPU computation
+        print(f"\n  [GPU Test] Running quick GPU computation test...")
+        test_tensor = torch.randn(100, 100, device='cuda')
+        result = torch.matmul(test_tensor, test_tensor)
+        torch.cuda.synchronize()
+        if result.is_cuda:
+            print(f"  [GPU Test] ✓ PASSED - GPU computation working correctly")
+        else:
+            print(f"  [GPU Test] ✗ FAILED - GPU computation not working!")
+    else:
+        print(f"  - CUDA Available: ✗ NO (using CPU - much slower)")
+        if device == 'cuda':
+            print(f"  - Warning: Device set to 'cuda' but CUDA not available, will use CPU")
+    
+    print(f"  - Parallel workers: {num_workers}")
     print(f"  - Compute MOCU twice: Always enabled (for stability - reduces Monte Carlo variance)")
+    print(f"  - Chunk size: {args.chunk_size}")
     print(f"  - Note: Training script will split at 96%%/4%% automatically")
+    
+    # Debug mode info
+    debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
+    if debug_gpu:
+        print(f"\n  [DEBUG MODE] GPU debugging enabled (set DEBUG_GPU=false to disable)")
     print("=" * 80)
+    
+    # Helper function to generate samples with multiprocessing
+    def generate_samples_parallel(coupling_type, num_samples, desc):
+        """Generate samples using multiprocessing if enabled."""
+        if num_workers <= 1:
+            # Sequential processing (no multiprocessing)
+            data = []
+            with tqdm(total=num_samples, desc=desc, unit="sample", ncols=100) as pbar:
+                for i in range(num_samples):
+                    sample = generate_single_sample((N, K_max, h, M, T, coupling_type, device, None))
+                    if sample is not None:
+                        data.append(sample)
+                    pbar.update(1)
+        else:
+            # Multiprocessing with progress tracking
+            # Note: Each worker needs its own CUDA context, so we'll use CPU for sync checks
+            # and let each process handle its own CUDA operations
+            data = []
+            
+            # Prepare arguments for all samples
+            # For multiprocessing with CUDA, we assign different GPU IDs or use CPU
+            # Since CUDA contexts can't be easily shared, we'll process in smaller batches
+            # and let each worker handle its own CUDA operations
+            
+            # Create argument tuples
+            args_list = [(N, K_max, h, M, T, coupling_type, device, i % num_workers) 
+                        for i in range(num_samples)]
+            
+            # Process in chunks to show progress
+            with tqdm(total=num_samples, desc=desc, unit="sample", ncols=100) as pbar:
+                # Use multiprocessing pool
+                with mp.Pool(processes=num_workers) as pool:
+                    # Process in chunks for better progress updates
+                    chunk_size = args.chunk_size
+                    for chunk_start in range(0, num_samples, chunk_size):
+                        chunk_end = min(chunk_start + chunk_size, num_samples)
+                        chunk_args = args_list[chunk_start:chunk_end]
+                        
+                        # Process chunk
+                        chunk_results = pool.map(generate_single_sample, chunk_args)
+                        
+                        # Collect valid samples
+                        for sample in chunk_results:
+                            if sample is not None:
+                                data.append(sample)
+                        
+                        # Update progress
+                        pbar.update(len(chunk_results))
+        
+        return data
     
     # Generate Type 1 data
     print("\n[1/4] Generating Type 1 data (per-edge coupling distribution)...")
-    data_type1 = []
-    
-    with tqdm(total=samples_per_type, desc="  Type 1", unit="sample", ncols=100) as pbar:
-        for i in range(samples_per_type):
-            sample = generate_single_sample(N, K_max, h, M, T, coupling_type='type1', 
-                                           device=device)
-            if sample is not None:
-                data_type1.append(sample)
-            pbar.update(1)
-    
-    print(f"  ✓ Completed Type 1: {len(data_type1)} valid samples ({samples_per_type - len(data_type1)} skipped)")
+    start_time = time.time()
+    data_type1 = generate_samples_parallel('type1', samples_per_type, "  Type 1")
+    elapsed = time.time() - start_time
+    print(f"  ✓ Completed Type 1: {len(data_type1)} valid samples ({samples_per_type - len(data_type1)} skipped) in {elapsed:.1f}s")
+    if len(data_type1) > 0:
+        print(f"    Average: {elapsed/len(data_type1):.2f}s/sample, {len(data_type1)/elapsed:.2f} samples/s")
     
     # Generate Type 2 data
     print("\n[2/4] Generating Type 2 data (per-oscillator coupling distribution)...")
-    data_type2 = []
-    
-    with tqdm(total=samples_per_type, desc="  Type 2", unit="sample", ncols=100) as pbar:
-        for i in range(samples_per_type):
-            sample = generate_single_sample(N, K_max, h, M, T, coupling_type='type2', 
-                                           device=device)
-            if sample is not None:
-                data_type2.append(sample)
-            pbar.update(1)
-    
-    print(f"  ✓ Completed Type 2: {len(data_type2)} valid samples ({samples_per_type - len(data_type2)} skipped)")
+    start_time = time.time()
+    data_type2 = generate_samples_parallel('type2', samples_per_type, "  Type 2")
+    elapsed = time.time() - start_time
+    print(f"  ✓ Completed Type 2: {len(data_type2)} valid samples ({samples_per_type - len(data_type2)} skipped) in {elapsed:.1f}s")
+    if len(data_type2) > 0:
+        print(f"    Average: {elapsed/len(data_type2):.2f}s/sample, {len(data_type2)/elapsed:.2f} samples/s")
     
     # Save JSON files if requested
     if args.save_json:

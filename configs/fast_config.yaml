@@ -15,6 +15,11 @@ dataset:
   train_size: 100          # 100 train samples
   K_max: 1024              # Minimal: 1024 Monte Carlo samples (vs 20480 full)
   save_json: false
+  
+# Data generation optimization settings (for testing speed)
+data_generation:
+  num_workers: 4           # Use 4 parallel workers for faster generation (testing only)
+  chunk_size: 10           # Samples per worker batch
 
 # Training parameters (MINIMAL for quick verification)
 training:

@@ -46,6 +46,21 @@ def _mocu_comp_torch(w: Union[np.ndarray, torch.Tensor], h: float, N: int, M: in
     if not a.is_cuda and device == 'cuda' and torch.cuda.is_available():
         a = a.cuda()
     
+    # Debug: Verify tensors are on GPU
+    import os
+    debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
+    if debug_gpu:
+        if device == 'cuda' and torch.cuda.is_available():
+            assert w.is_cuda, f"ERROR: w tensor not on GPU! device={w.device}"
+            assert a.is_cuda, f"ERROR: a tensor not on GPU! device={a.device}"
+            # Only print once to avoid spam
+            if not hasattr(_mocu_comp_torch, '_debug_printed'):
+                print(f"[DEBUG] _mocu_comp_torch: Tensors confirmed on GPU (device={w.device})")
+                mem_allocated = torch.cuda.memory_allocated(0) / 1024**2
+                mem_reserved = torch.cuda.memory_reserved(0) / 1024**2
+                print(f"[DEBUG] GPU memory after tensor creation: {mem_allocated:.2f} MB allocated, {mem_reserved:.2f} MB reserved")
+                _mocu_comp_torch._debug_printed = True
+    
     theta = torch.zeros(N, device=w.device, dtype=torch.float32)
     theta_old = torch.zeros(N, device=w.device, dtype=torch.float32)
     
@@ -59,6 +74,15 @@ def _mocu_comp_torch(w: Union[np.ndarray, torch.Tensor], h: float, N: int, M: in
         # F[i] = w[i] + sum_j(a[i,j] * sin(theta[j] - theta[i]))
         theta_diff = theta.unsqueeze(0) - theta.unsqueeze(1)  # [N, N]
         F = w + torch.sum(a * torch.sin(theta_diff), dim=1)
+        
+        # Debug: Show GPU memory during first iteration to confirm GPU usage
+        if debug_gpu and device == 'cuda' and torch.cuda.is_available() and k == 0:
+            if not hasattr(_mocu_comp_torch, '_mem_debug_printed'):
+                mem_allocated = torch.cuda.memory_allocated(0) / 1024**2
+                mem_reserved = torch.cuda.memory_reserved(0) / 1024**2
+                print(f"[DEBUG] GPU memory during RK4 computation (iteration {k}): {mem_allocated:.2f} MB allocated, {mem_reserved:.2f} MB reserved")
+                print(f"[DEBUG] Tensor devices: theta on {theta.device}, w on {w.device}, a on {a.device}")
+                _mocu_comp_torch._mem_debug_printed = True
         
         # RK4 step 1
         k1 = h * F
@@ -209,9 +233,20 @@ def MOCU(K_max: int, w: Union[np.ndarray, torch.Tensor], N: int, h: float, M: in
         MOCU value (float)
     """
     # Determine device
+    import os
+    debug_gpu = os.getenv('DEBUG_GPU', 'false').lower() == 'true'
+    
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
         print("[MOCU] CUDA not available, using CPU (slower)")
+    elif device == 'cuda' and torch.cuda.is_available() and debug_gpu:
+        # Debug: Print GPU info on first call
+        if not hasattr(MOCU, '_debug_printed'):
+            print(f"[DEBUG] MOCU using GPU: {torch.cuda.get_device_name(0)}")
+            mem_before = torch.cuda.memory_allocated(0) / 1024**2
+            mem_reserved_before = torch.cuda.memory_reserved(0) / 1024**2
+            print(f"[DEBUG] GPU memory before MOCU: {mem_before:.2f} MB allocated, {mem_reserved_before:.2f} MB reserved")
+            MOCU._debug_printed = True
     
     # Set random seed
     if seed != 0:
@@ -267,9 +302,11 @@ def MOCU(K_max: int, w: Union[np.ndarray, torch.Tensor], N: int, h: float, M: in
         critical_c = _find_critical_coupling_torch(w, h, N, M, a_new, device=device)
         a_save[sample_idx] = critical_c
         
-        # Optional: synchronize every 100 samples to avoid memory buildup
-        if device == 'cuda' and torch.cuda.is_available() and (sample_idx + 1) % 100 == 0:
+        # Optional: synchronize periodically to avoid memory buildup
+        # Less frequent sync reduces overhead (every 500 samples instead of 100)
+        if device == 'cuda' and torch.cuda.is_available() and (sample_idx + 1) % 500 == 0:
             torch.cuda.synchronize()
+            torch.cuda.empty_cache()  # Free unused GPU memory
     
     if np.min(a_save) == 0:
         print("Non sync case exists")

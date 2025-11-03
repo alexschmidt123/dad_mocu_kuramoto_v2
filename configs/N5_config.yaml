@@ -13,6 +13,11 @@ dataset:
   K_max: 20480  # Monte Carlo samples for MOCU computation
   save_json: false
 
+# Data generation optimization settings (production: use defaults for stability)
+data_generation:
+  num_workers: 2           # Conservative: 2 workers to avoid GPU memory issues with CUDA
+  chunk_size: 10            # Samples per worker batch
+
 # Training parameters
 training:
   model_name: "cons5"  # Identifier for trained model directory (models/cons5/)

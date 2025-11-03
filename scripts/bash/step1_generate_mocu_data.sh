@@ -21,6 +21,10 @@ TRAIN_SIZE=$(grep "train_size:" $CONFIG_FILE | awk '{print $2}')
 K_MAX=$(grep -A 3 "^dataset:" $CONFIG_FILE | grep "K_max:" | awk '{print $2}')
 SAVE_JSON=$(grep "save_json:" $CONFIG_FILE | awk '{print $2}')
 
+# Parse data generation optimization settings (optional, with defaults)
+NUM_WORKERS=$(grep -A 3 "^data_generation:" $CONFIG_FILE | grep "  num_workers:" | awk '{print $2}')
+CHUNK_SIZE=$(grep -A 3 "^data_generation:" $CONFIG_FILE | grep "  chunk_size:" | awk '{print $2}')
+
 DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/"
 mkdir -p "$DATA_FOLDER"
 
@@ -33,10 +37,19 @@ ABS_DATA_FOLDER=$(cd "$DATA_FOLDER" && pwd)
 
 CMD="python3 generate_mocu_data.py --N $N --samples_per_type $SAMPLES --train_size $TRAIN_SIZE --K_max $K_MAX --output_dir $ABS_DATA_FOLDER"
 
-# MOCU is always computed twice (removed --compute_twice flag - always enabled for stability)
+# MOCU is always computed twice (always enabled for stability)
 
 if [ "$SAVE_JSON" = "true" ]; then
     CMD="$CMD --save_json"
+fi
+
+# Add multiprocessing settings if specified in config
+if [ -n "$NUM_WORKERS" ]; then
+    CMD="$CMD --num_workers $NUM_WORKERS"
+fi
+
+if [ -n "$CHUNK_SIZE" ]; then
+    CMD="$CMD --chunk_size $CHUNK_SIZE"
 fi
 
 eval $CMD

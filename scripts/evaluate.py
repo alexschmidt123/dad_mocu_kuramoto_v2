@@ -192,10 +192,15 @@ if __name__ == '__main__':
             except:
                 pass
             
+            # Determine device for MOCU computation (use PyTorch CUDA, not PyCUDA to avoid segfaults)
+            import torch
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            
             with tqdm(total=it_idx, desc="  Computing initial MOCU", leave=False, unit="iter", ncols=100) as pbar:
                 for l in range(it_idx):
+                    # Explicitly use PyTorch CUDA (not PyCUDA) to avoid segfaults
                     it_temp_val[l] = MOCU(K_max, w, N, deltaT, MReal, TReal, 
-                                         aInitialLower.copy(), aInitialUpper.copy(), 0)
+                                         aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
                     pbar.update(1)
             MOCUInitial = np.mean(it_temp_val)
             
