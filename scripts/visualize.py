@@ -20,6 +20,10 @@ update_cnt = args.update_cnt
 N = args.N
 resultFolder = args.result_folder
 
+# Ensure resultFolder ends with path separator for proper path joining
+if not resultFolder.endswith(os.sep):
+    resultFolder = resultFolder + os.sep
+
 # Keep iODE in list for index consistency, even though it's not used in experiments
 # DAD: Deep Adaptive Design (new method)
 listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM', 'DAD']
@@ -27,7 +31,7 @@ listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM', 'DAD']
 # Detect which methods have results by checking which files exist
 available_methods = []
 for method in listMethods:
-    mocu_file = resultFolder + method + '_MOCU.txt'
+    mocu_file = os.path.join(resultFolder, f'{method}_MOCU.txt')
     if os.path.exists(mocu_file):
         available_methods.append(method)
 
@@ -41,8 +45,8 @@ print(f"Found results for methods: {available_methods}")
 # Load data for available methods
 method_data = {}
 for method in available_methods:
-    mocu_file = resultFolder + method + '_MOCU.txt'
-    time_file = resultFolder + method + '_timeComplexity.txt'
+    mocu_file = os.path.join(resultFolder, f'{method}_MOCU.txt')
+    time_file = os.path.join(resultFolder, f'{method}_timeComplexity.txt')
     
     mocu_data = np.loadtxt(mocu_file, delimiter="\t")
     time_data = np.loadtxt(time_file, delimiter="\t")
@@ -93,9 +97,10 @@ plt.xticks(np.arange(0, update_cnt + 1, 1))
 plt.xlabel('Number of updates')
 plt.ylabel('MOCU')
 plt.grid(True)
-plt.savefig(resultFolder + f"MOCU_{N}.png", dpi=300)
+mocu_plot_path = os.path.join(resultFolder, f'MOCU_{N}.png')
+plt.savefig(mocu_plot_path, dpi=300)
 plt.close()
-print(f"✓ Saved MOCU plot: {resultFolder}MOCU_{N}.png")
+print(f"✓ Saved MOCU plot: {mocu_plot_path}")
 
 # Plot time complexity
 x_ax = np.arange(0, update_cnt + 1, 1)
@@ -126,9 +131,10 @@ plt.ylabel('Cumulative time complexity (in seconds)')
 plt.xticks(np.arange(0, update_cnt + 1, 1)) 
 plt.ylim(1, 10000)
 plt.grid(True)
-fig.savefig(resultFolder + f'timeComplexity_{N}.png', dpi=300)
+time_plot_path = os.path.join(resultFolder, f'timeComplexity_{N}.png')
+fig.savefig(time_plot_path, dpi=300)
 plt.close(fig)
-print(f"✓ Saved time complexity plot: {resultFolder}timeComplexity_{N}.png")
+print(f"✓ Saved time complexity plot: {time_plot_path}")
 
 print(f"\n✓ Visualization complete!")
 print(f"  Methods plotted: {', '.join(available_methods)}")

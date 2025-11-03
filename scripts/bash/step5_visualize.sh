@@ -31,6 +31,11 @@ cd "${PROJECT_ROOT}/scripts"
 # Python scripts remain in scripts/ directory
 ABS_RESULT_FOLDER=$(cd "$RESULT_RUN_FOLDER" && pwd)
 
+# Ensure path ends with / for proper path joining in visualize.py
+if [ "${ABS_RESULT_FOLDER: -1}" != "/" ]; then
+    ABS_RESULT_FOLDER="${ABS_RESULT_FOLDER}/"
+fi
+
 python3 visualize.py --N $N --update_cnt 10 --result_folder "$ABS_RESULT_FOLDER"
 
 echo "✓ Visualizations generated: ${RESULT_RUN_FOLDER}MOCU_${N}.png"
