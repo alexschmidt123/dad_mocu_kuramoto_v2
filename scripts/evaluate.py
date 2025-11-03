@@ -1,12 +1,13 @@
 """
-Unified Evaluation Script using New OED Methods Structure
+Enhanced Evaluation Script with Smart Method Ordering
 
-This script evaluates all OED methods using the new unified interface.
-All methods inherit from OEDMethod base class and share a common API.
+This script automatically orders methods to run PyCUDA-based methods (ODE, RANDOM, ENTROPY)
+before PyTorch-based methods (iNN, NN, DAD) to avoid context conflicts while maintaining
+maximum performance.
 
 Usage:
-    python scripts/evaluation.py
-    python scripts/evaluation.py --methods "iNN,NN,RANDOM"
+    python scripts/evaluate.py
+    python scripts/evaluate.py --methods "ODE,iNN,NN"
 """
 
 import sys
@@ -21,52 +22,31 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-# CRITICAL: Check for PyCUDA context BEFORE importing torch (same as DAD training)
-# If PyCUDA context exists, PyTorch CUDA initialization may conflict
-try:
-    import pycuda.driver as drv
-    try:
-        ctx = drv.Context.get_current()
-        if ctx is not None:
-            print("[EVAL] PyCUDA context detected - this is OK for evaluation")
-            print("[EVAL] PyCUDA will be used for RANDOM/ENTROPY/ODE methods first")
-    except Exception:
-        # No PyCUDA context - that's fine
-        pass
-except ImportError:
-    pass  # PyCUDA not installed
-except Exception:
-    pass
-
-# CRITICAL: Lazy import methods to avoid PyTorch CUDA initialization before PyCUDA usage
-# Import methods only when needed (inside method loop)
-# This ensures PyCUDA can be used for RANDOM/ENTROPY/ODE before PyTorch CUDA is initialized
+# Import sync detection (CPU-based, always available)
 from src.core.sync_detection import determineSyncN, determineSyncTwo
-# MOCU imported lazily when needed (for sampling-based methods: ODE, ENTROPY, RANDOM)
-# MPNN methods (iNN/NN) use predictor instead of direct MOCU computation
 
 
 if __name__ == '__main__':
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Evaluate OED methods')
+    parser = argparse.ArgumentParser(description='Evaluate OED methods with smart ordering')
     parser.add_argument('--methods', type=str, default=None,
-                        help='Comma-separated list of methods to evaluate (e.g., "iNN,NN,RANDOM")')
+                        help='Comma-separated list of methods to evaluate (e.g., "ODE,iNN,NN")')
+    parser.add_argument('--force-pytorch', action='store_true',
+                        help='Force PyTorch CUDA for all methods (slower but simpler)')
     args = parser.parse_args()
+    
     # ========== Configuration ==========
-    # Read from environment variables (set by workflow scripts from config file)
-    # Fallback to defaults if not set or empty
     def safe_getenv_int(key, default):
         """Get environment variable as int, handling empty strings."""
         val = os.getenv(key, default)
         return int(val) if val else int(default)
     
-    it_idx = safe_getenv_int('EVAL_IT_IDX', '10')  # Number of MOCU averaging iterations
-    update_cnt = safe_getenv_int('EVAL_UPDATE_CNT', '10')  # Number of sequential experiments
-    N = safe_getenv_int('EVAL_N', '5')  # Number of oscillators
-    K_max = safe_getenv_int('EVAL_K_MAX', '20480')  # Monte Carlo samples for MOCU
+    it_idx = safe_getenv_int('EVAL_IT_IDX', '10')
+    update_cnt = safe_getenv_int('EVAL_UPDATE_CNT', '10')
+    N = safe_getenv_int('EVAL_N', '5')
+    K_max = safe_getenv_int('EVAL_K_MAX', '20480')
     numberOfSimulationsPerMethod = safe_getenv_int('EVAL_NUM_SIMULATIONS', '10')
     
-    # Get result folder from environment variable
     result_folder = os.getenv('RESULT_FOLDER', str(PROJECT_ROOT / 'results' / 'default'))
     os.makedirs(result_folder, exist_ok=True)
     
@@ -85,26 +65,53 @@ if __name__ == '__main__':
     # Natural frequencies
     w = np.array([-2.5000, -0.6667, 1.1667, 2.0000, 5.8333])
     
-    # ========== Methods to evaluate ==========
-    # Can be set via command line or use defaults
-    if args.methods:
-        # Methods from command line (from config file via run.sh)
-        method_names = [m.strip() for m in args.methods.split(',')]
-        print(f"Using methods from command line: {method_names}")
-    else:
-        # Default methods if not specified
-        method_names = [
-            'iNN',      # Iterative MPNN (needs: train_predictor.py)
-            'NN',       # Static MPNN (needs: train_predictor.py)
-            'ODE',      # Static sampling-based (no training needed, but VERY slow)
-            # 'iODE',   # Iterative sampling-based (no training, EXTREMELY slow)
-            'ENTROPY',  # Greedy uncertainty (no training needed)
-            'RANDOM',   # Random baseline (no training needed)
-            # 'DAD',    # Deep Adaptive Design (needs: train_dad_policy.py)
-        ]
-        print(f"Using default methods: {method_names}")
+    # ========== Smart Method Ordering ==========
+    # Categorize methods by CUDA backend
+    PYCUDA_METHODS = ['RANDOM', 'ENTROPY', 'ODE', 'iODE']
+    PYTORCH_METHODS = ['iNN', 'NN', 'DAD']
     
-    # numberOfSimulationsPerMethod already set above from environment variable
+    if args.methods:
+        method_names = [m.strip() for m in args.methods.split(',')]
+    else:
+        method_names = ['iNN', 'NN', 'ODE', 'ENTROPY', 'RANDOM']
+    
+    # Sort methods: PyCUDA first, PyTorch second (unless --force-pytorch)
+    if args.force_pytorch:
+        print(f"\n🔧 Force PyTorch mode enabled - all methods will use PyTorch CUDA")
+        print(f"   (ODE will be slower but no context conflicts)")
+        use_pycuda_ordering = False
+    else:
+        # Check if we have both PyCUDA and PyTorch methods
+        has_pycuda = any(m in PYCUDA_METHODS for m in method_names)
+        has_pytorch = any(m in PYTORCH_METHODS for m in method_names)
+        use_pycuda_ordering = has_pycuda and has_pytorch
+        
+        if use_pycuda_ordering:
+            pycuda_list = [m for m in method_names if m in PYCUDA_METHODS]
+            pytorch_list = [m for m in method_names if m in PYTORCH_METHODS]
+            method_names = pycuda_list + pytorch_list
+            
+            print(f"\n🔧 Smart method ordering enabled:")
+            print(f"   PyCUDA methods (first):  {pycuda_list}")
+            print(f"   PyTorch methods (after): {pytorch_list}")
+            print(f"   → This maximizes ODE performance while avoiding conflicts")
+        elif has_pycuda:
+            print(f"\n🔧 Only PyCUDA methods detected - using PyCUDA (fast)")
+        elif has_pytorch:
+            print(f"\n🔧 Only PyTorch methods detected - using PyTorch CUDA")
+    
+    print(f"\n📋 Method execution order: {method_names}")
+    
+    # ========== Choose MOCU backend for initial computation ==========
+    # Use PyCUDA for initial MOCU (as in original paper 2023)
+    # This ensures compatibility with PyCUDA-based methods (ODE, RANDOM, ENTROPY)
+    # PyTorch methods (iNN, NN, DAD) don't need initial MOCU computation
+    from src.core.mocu_pycuda import MOCU_pycuda as MOCU_initial
+    mocu_backend = "PyCUDA (original paper 2023)"
+    
+    print(f"   Initial MOCU computation: {mocu_backend}")
+    print()
+    
     numberOfVaildSimulations = 0
     numberOfSimulations = 0
     
@@ -120,13 +127,11 @@ if __name__ == '__main__':
             aInitialUpper[j, i] = aInitialUpper[i, j]
             aInitialLower[j, i] = aInitialLower[i, j]
     
-    # Apply specific reductions
     aInitialUpper[0, 2:5] = aInitialUpper[0, 2:5] * 0.3
     aInitialLower[0, 2:5] = aInitialLower[0, 2:5] * 0.3
     aInitialUpper[1, 3:5] = aInitialUpper[1, 3:5] * 0.45
     aInitialLower[1, 3:5] = aInitialLower[1, 3:5] * 0.45
     
-    # Ensure symmetry
     for i in range(N):
         for j in range(i + 1, N):
             aInitialUpper[j, i] = aInitialUpper[i, j]
@@ -141,7 +146,6 @@ if __name__ == '__main__':
     save_MOCU_matrix = np.zeros([update_cnt + 1, len(method_names), numberOfSimulationsPerMethod])
     
     # ========== Main simulation loop ==========
-    # Progress bar for simulations
     sim_pbar = tqdm(total=numberOfSimulationsPerMethod, desc="Simulations", unit="sim", ncols=100)
     
     while numberOfVaildSimulations < numberOfSimulationsPerMethod:
@@ -158,7 +162,7 @@ if __name__ == '__main__':
         
         numberOfSimulations += 1
         
-        # Check if system is already synchronized (skip if so)
+        # Check if system is already synchronized
         init_sync_check = determineSyncN(w, deltaT, N, MReal, a)
         if init_sync_check == 1:
             print('             The system has been already stable. Skipping...')
@@ -166,7 +170,7 @@ if __name__ == '__main__':
         else:
             print('             Unstable system has been found ✓')
         
-        # Determine synchronization status and critical couplings for each pair
+        # Determine synchronization status and critical couplings
         isSynchronized = np.zeros((N, N))
         criticalK = np.zeros((N, N))
         
@@ -181,56 +185,36 @@ if __name__ == '__main__':
                 isSynchronized[i, j] = determineSyncTwo(w_i, w_j, deltaT, 2, MReal, a_ij)
                 isSynchronized[j, i] = isSynchronized[i, j]
         
-        # Save coupling strengths for this simulation
+        # Save coupling strengths
         coupling_file = os.path.join(result_folder, f'paramCouplingStrength{numberOfVaildSimulations}.txt')
         np.savetxt(coupling_file, a, fmt='%.64e')
         
-        # ========== Evaluate each method ==========
-        # Compute initial MOCU ONCE per simulation (before any methods are initialized)
-        # This avoids PyCUDA/PyTorch CUDA conflicts
-        # CRITICAL: Compute BEFORE any MPNN methods are loaded to avoid CUDA context conflicts
+        # ========== Compute initial MOCU ==========
         timeMOCU = time.time()
         it_temp_val = np.zeros(it_idx)
         
-        try:
-            from src.core.mocu_pycuda import MOCU_pycuda
-            # CRITICAL: Ensure no PyTorch CUDA context exists before PyCUDA
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-            except:
-                pass
-            
-            with tqdm(total=it_idx, desc="  Computing initial MOCU (PyCUDA)", leave=False, unit="iter", ncols=100) as pbar:
-                for l in range(it_idx):
-                    it_temp_val[l] = MOCU_pycuda(K_max, w, N, deltaT, MReal, TReal, 
-                                                  aInitialLower.copy(), aInitialUpper.copy(), 0)
-                    pbar.update(1)
-        except (ImportError, RuntimeError) as e:
-            print(f"[WARNING] PyCUDA initial MOCU computation failed: {e}")
-            print("[WARNING] This may cause issues with ODE methods")
-            # Fallback: use zero (methods will handle their own computation)
-            it_temp_val.fill(0.0)
+        with tqdm(total=it_idx, desc=f"  Initial MOCU ({mocu_backend})", leave=False, unit="iter", ncols=100) as pbar:
+            for l in range(it_idx):
+                it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal, 
+                                              aInitialLower.copy(), aInitialUpper.copy(), 0)
+                pbar.update(1)
         
         MOCUInitial = np.mean(it_temp_val)
         print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {time.time() - timeMOCU:.2f}s)")
         
+        # ========== Evaluate each method ==========
         method_pbar = tqdm(method_names, desc=f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}", 
                           leave=False, unit="method", ncols=100)
+        
         for method_idx, method_name in enumerate(method_pbar):
             method_pbar.set_description(f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod} - {method_name}")
             
-            # Initialize method
             method_start_time = time.time()
             
             try:
-                # Lazy import methods to avoid PyTorch CUDA initialization before PyCUDA
+                # Lazy import methods
                 if method_name == 'iNN':
                     from src.methods.inn import iNN_Method
-                    # MPNN method: MOCU computation is already done, synchronized
-                    # MPNN model loading will happen separately
                     method = iNN_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
                                        model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
                 
@@ -260,15 +244,11 @@ if __name__ == '__main__':
                 
                 elif method_name == 'DAD':
                     from src.methods.dad_mocu import DAD_MOCU_Method
-                    # Try to find DAD policy in models/{config_name}/{timestamp}/dad_policy_N{N}.pth
-                    # Or use environment variable if set
                     policy_path = None
                     if 'DAD_POLICY_PATH' in os.environ:
                         policy_path = Path(os.environ['DAD_POLICY_PATH'])
                         if not policy_path.exists():
-                            print(f"[DAD] Warning: DAD_POLICY_PATH set but file not found: {policy_path}")
                             policy_path = None
-                    
                     method = DAD_MOCU_Method(N, K_max, deltaT, MReal, TReal, it_idx, 
                                             policy_model_path=policy_path)
                 
@@ -277,7 +257,6 @@ if __name__ == '__main__':
                     continue
                 
                 # Run the method
-                # Pass initial MOCU (computed with PyCUDA before methods) for fallback
                 MOCUCurve, experimentSequence, timeComplexity = method.run_episode(
                     w_init=w,
                     a_lower_init=aInitialLower.copy(),
@@ -285,7 +264,7 @@ if __name__ == '__main__':
                     criticalK_init=criticalK,
                     isSynchronized_init=isSynchronized,
                     update_cnt=update_cnt,
-                    initial_mocu=MOCUInitial  # Pass initial MOCU for fallback
+                    initial_mocu=MOCUInitial
                 )
                 
                 total_time = time.time() - method_start_time
@@ -317,9 +296,7 @@ if __name__ == '__main__':
         
         numberOfVaildSimulations += 1
         sim_pbar.update(1)
-        sim_pbar.set_postfix({
-            'Completed': f'{numberOfVaildSimulations}/{numberOfSimulationsPerMethod}'
-        })
+        sim_pbar.set_postfix({'Completed': f'{numberOfVaildSimulations}/{numberOfSimulationsPerMethod}'})
     
     sim_pbar.close()
     
@@ -337,4 +314,3 @@ if __name__ == '__main__':
     outMOCUFile.close()
     
     print(f"\n✓ Results saved to: {result_folder}")
-

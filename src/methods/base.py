@@ -233,12 +233,15 @@ class OEDMethod(ABC):
             except:
                 pass
             
+            # Use PyCUDA (as in original paper 2023)
             try:
                 from ..core.mocu_pycuda import MOCU_pycuda
                 for l in range(self.it_idx):
                     it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT, 
-                                                 self.MReal, self.TReal, 
-                                                 a_lower_init, a_upper_init, 0)
+                                                  self.MReal, self.TReal, 
+                                                  a_lower_init, a_upper_init, 0)
+                # Update last valid MOCU for iterative fallback
+                self._last_valid_mocu = np.mean(it_temp_val)
             except (ImportError, RuntimeError) as e:
                 # PyCUDA failed - use fallback from evaluate.py
                 if not self._pycuda_warned:
@@ -446,6 +449,10 @@ class OEDMethod(ABC):
                     MOCUCurve[iteration + 1] = np.mean(it_temp_val)
                     # Update last valid MOCU for future fallbacks
                     self._last_valid_mocu = MOCUCurve[iteration + 1]
+                    # Debug: Print first successful computation
+                    if iteration == 0 and not hasattr(self, '_pycuda_success_printed'):
+                        print(f"[{method_name}] PyCUDA iterative MOCU computed: {MOCUCurve[iteration + 1]:.6f}")
+                        self._pycuda_success_printed = True
                 except Exception as e:
                     # PyCUDA failed - catch ALL exceptions (not just ImportError/RuntimeError)
                     # PyCUDA can raise various exceptions: LogicError, Error, etc.

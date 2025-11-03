@@ -19,7 +19,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
 
-# Use PyCUDA for ODE methods (required to avoid segfaults with PyTorch)
+# Use PyCUDA for ODE methods (as in original paper 2023)
 try:
     from src.core.mocu_pycuda import MOCU_pycuda as MOCU_pycuda_impl
     PYCUDA_AVAILABLE = True
