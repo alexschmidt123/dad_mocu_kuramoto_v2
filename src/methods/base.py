@@ -480,42 +480,37 @@ class OEDMethod(ABC):
                             print(f"[{method_name}] PyCUDA iterative MOCU computed: {MOCUCurve[iteration + 1]:.6f}")
                             self._pycuda_success_printed = True
                     except Exception as e:
-                        # PyCUDA failed - catch ALL exceptions (not just ImportError/RuntimeError)
-                        # PyCUDA can raise various exceptions: LogicError, Error, etc.
-                        # FIXED: Improved fallback logic - use last valid MOCU or previous value
+                        # PyCUDA failed - catch ALL exceptions
+                        # CRITICAL: Do NOT use slow PyTorch MOCU or CPU computation
+                        # Instead, use cached value and warn user
                         if not hasattr(self, '_pycuda_iter_warned'):
-                            print(f"[{method_name}] PyCUDA failed for iterative MOCU (iteration {iteration+1}): {type(e).__name__}: {e}")
-                            if hasattr(self, '_last_valid_mocu'):
-                                print(f"[{method_name}] Fallback: Using last valid MOCU: {self._last_valid_mocu:.6f}")
-                            else:
-                                print(f"[{method_name}] Fallback: Using previous MOCU value: {MOCUCurve[iteration]:.6f}")
+                            print(f"[{method_name}] ERROR: PyCUDA failed for iterative MOCU (iteration {iteration+1}): {type(e).__name__}: {e}")
+                            print(f"[{method_name}] WARNING: Using cached MOCU value - MOCU will not update correctly!")
+                            print(f"[{method_name}] SOLUTION: Run PyCUDA methods (RANDOM/ODE/ENTROPY) BEFORE PyTorch methods to avoid conflicts")
                             self._pycuda_iter_warned = True
-                        # Fallback strategy: prefer last_valid_mocu, then previous iteration value
+                        # Use last valid MOCU or previous value (no slow fallback)
                         if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
                             MOCUCurve[iteration + 1] = self._last_valid_mocu
                         else:
                             MOCUCurve[iteration + 1] = MOCUCurve[iteration]
                 else:
-                    # PyCUDA not available or conflict detected - use fallback
-                    # FIXED: Improved fallback logic - use last valid MOCU or previous value
-                    if not hasattr(self, '_pycuda_fallback_used'):
-                        if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
-                            MOCUCurve[iteration + 1] = self._last_valid_mocu
-                        else:
-                            MOCUCurve[iteration + 1] = MOCUCurve[iteration]
-                        if iteration == 0:
-                            # Only print once at start, not every iteration
-                            if conflict_detected:
-                                print(f"[{method_name}] PyTorch CUDA conflict detected - using fallback MOCU: {MOCUCurve[iteration + 1]:.6f}")
-                            elif not pycuda_available:
-                                print(f"[{method_name}] PyCUDA not available - using fallback MOCU: {MOCUCurve[iteration + 1]:.6f}")
-                            self._pycuda_fallback_used = True
+                    # PyCUDA not available or conflict detected
+                    # CRITICAL: Do NOT use slow PyTorch MOCU or CPU computation
+                    # Use cached value and warn user about method ordering
+                    if not hasattr(self, '_pycuda_fallback_warned'):
+                        if conflict_detected:
+                            print(f"[{method_name}] ERROR: PyTorch CUDA conflict detected - PyCUDA cannot work!")
+                            print(f"[{method_name}] WARNING: Using cached MOCU value - MOCU will not update correctly!")
+                            print(f"[{method_name}] SOLUTION: Run PyCUDA methods (RANDOM/ODE/ENTROPY) BEFORE PyTorch methods (iNN/NN/DAD)")
+                        elif not pycuda_available:
+                            print(f"[{method_name}] ERROR: PyCUDA not available!")
+                            print(f"[{method_name}] WARNING: Using cached MOCU value - MOCU will not update correctly!")
+                        self._pycuda_fallback_warned = True
+                    # Use last valid MOCU or previous value (no slow fallback)
+                    if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
+                        MOCUCurve[iteration + 1] = self._last_valid_mocu
                     else:
-                        # Continue using fallback strategy for subsequent iterations
-                        if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
-                            MOCUCurve[iteration + 1] = self._last_valid_mocu
-                        else:
-                            MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
             
             # Ensure MOCU is non-increasing (monotonicity)
             # NOTE: For MPNN predictors, small prediction errors might cause slight increases
