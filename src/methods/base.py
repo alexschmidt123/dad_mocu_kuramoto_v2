@@ -209,53 +209,37 @@ class OEDMethod(ABC):
             else:
                 it_temp_val.fill(0.0)
         else:
-            # For ODE/RANDOM/ENTROPY methods, use PyCUDA (as in original paper 2023)
-            # CRITICAL: These methods MUST run BEFORE PyTorch CUDA is initialized
-            # The evaluation script ensures this by ordering methods correctly
-            # Use same troubleshooting approach as DAD training
-            
-            # CRITICAL: Check for PyCUDA context conflict (same as DAD training)
-            # Clear PyTorch CUDA if it exists before PyCUDA
-            try:
-                if torch is not None and torch.cuda.is_available():
-                    # Clear any PyTorch CUDA operations before PyCUDA
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-                # Check if PyCUDA context can be used
+            # For ODE/RANDOM/ENTROPY methods, use initial MOCU from evaluate.py
+            # FIXED: Avoid redundant recomputation - evaluate.py already computed initial MOCU
+            # This prevents PyCUDA/PyTorch conflicts and improves performance
+            if initial_mocu is not None:
+                # Use the pre-computed initial MOCU from evaluate.py (avoids redundant computation)
+                it_temp_val.fill(initial_mocu)
+                self._last_valid_mocu = initial_mocu  # Store for iterative fallback
+            else:
+                # Fallback: Only recompute if initial_mocu was not provided (shouldn't happen in normal flow)
+                # This case handles edge cases where evaluate.py didn't compute initial MOCU
                 try:
-                    import pycuda.driver as drv
-                    pycuda_ctx = drv.Context.get_current()
-                    if pycuda_ctx is not None and torch is not None and torch.cuda.is_initialized():
-                        # Both contexts active - this is OK for initial MOCU (evaluate.py handles this)
-                        pass
-                except:
-                    pass
-            except:
-                pass
-            
-            # Use PyCUDA (as in original paper 2023)
-            try:
-                from ..core.mocu_pycuda import MOCU_pycuda
-                for l in range(self.it_idx):
-                    it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT, 
-                                                  self.MReal, self.TReal, 
-                                                  a_lower_init, a_upper_init, 0)
-                # Update last valid MOCU for iterative fallback
-                self._last_valid_mocu = np.mean(it_temp_val)
-            except (ImportError, RuntimeError) as e:
-                # PyCUDA failed - use fallback from evaluate.py
-                if not self._pycuda_warned:
-                    print(f"[WARNING] PyCUDA unavailable for {method_name} initial MOCU: {e}")
-                    if initial_mocu is not None:
-                        print(f"[WARNING] Using initial MOCU from evaluate.py: {initial_mocu:.6f}")
-                    self._pycuda_warned = True
-                # Use initial MOCU from evaluate.py (computed with PyCUDA before methods)
-                if initial_mocu is not None:
-                    it_temp_val.fill(initial_mocu)
-                    self._last_valid_mocu = initial_mocu  # Store for iterative fallback
-                else:
+                    # Clear PyTorch CUDA if it exists before PyCUDA (to avoid conflicts)
+                    if torch is not None and torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                    from ..core.mocu_pycuda import MOCU_pycuda
+                    for l in range(self.it_idx):
+                        it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT, 
+                                                      self.MReal, self.TReal, 
+                                                      a_lower_init, a_upper_init, 0)
+                    self._last_valid_mocu = np.mean(it_temp_val)
+                except (ImportError, RuntimeError) as e:
+                    # PyCUDA failed - use zero as last resort
+                    if not self._pycuda_warned:
+                        print(f"[WARNING] PyCUDA unavailable and no initial_mocu provided: {e}")
+                        print(f"[WARNING] Using zero for initial MOCU (this may affect results)")
+                        self._pycuda_warned = True
                     it_temp_val.fill(0.0)
-        
+                    self._last_valid_mocu = 0.0
+
+
         MOCUCurve[0] = np.mean(it_temp_val)
         
         # Ensure all CUDA operations are complete before MPNN usage
@@ -498,28 +482,40 @@ class OEDMethod(ABC):
                     except Exception as e:
                         # PyCUDA failed - catch ALL exceptions (not just ImportError/RuntimeError)
                         # PyCUDA can raise various exceptions: LogicError, Error, etc.
-                        # Only warn once per method to avoid spam
+                        # FIXED: Improved fallback logic - use last valid MOCU or previous value
                         if not hasattr(self, '_pycuda_iter_warned'):
                             print(f"[{method_name}] PyCUDA failed for iterative MOCU (iteration {iteration+1}): {type(e).__name__}: {e}")
                             if hasattr(self, '_last_valid_mocu'):
-                                print(f"[{method_name}] Using last valid MOCU: {self._last_valid_mocu:.6f}")
+                                print(f"[{method_name}] Fallback: Using last valid MOCU: {self._last_valid_mocu:.6f}")
                             else:
-                                print(f"[{method_name}] Using previous MOCU value: {MOCUCurve[iteration]:.6f}")
+                                print(f"[{method_name}] Fallback: Using previous MOCU value: {MOCUCurve[iteration]:.6f}")
                             self._pycuda_iter_warned = True
-                        if hasattr(self, '_last_valid_mocu'):
+                        # Fallback strategy: prefer last_valid_mocu, then previous iteration value
+                        if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
                             MOCUCurve[iteration + 1] = self._last_valid_mocu
                         else:
                             MOCUCurve[iteration + 1] = MOCUCurve[iteration]
                 else:
                     # PyCUDA not available or conflict detected - use fallback
+                    # FIXED: Improved fallback logic - use last valid MOCU or previous value
                     if not hasattr(self, '_pycuda_fallback_used'):
-                        if hasattr(self, '_last_valid_mocu'):
+                        if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
                             MOCUCurve[iteration + 1] = self._last_valid_mocu
                         else:
                             MOCUCurve[iteration + 1] = MOCUCurve[iteration]
                         if iteration == 0:
                             # Only print once at start, not every iteration
+                            if conflict_detected:
+                                print(f"[{method_name}] PyTorch CUDA conflict detected - using fallback MOCU: {MOCUCurve[iteration + 1]:.6f}")
+                            elif not pycuda_available:
+                                print(f"[{method_name}] PyCUDA not available - using fallback MOCU: {MOCUCurve[iteration + 1]:.6f}")
                             self._pycuda_fallback_used = True
+                    else:
+                        # Continue using fallback strategy for subsequent iterations
+                        if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
+                            MOCUCurve[iteration + 1] = self._last_valid_mocu
+                        else:
+                            MOCUCurve[iteration + 1] = MOCUCurve[iteration]
             
             # Ensure MOCU is non-increasing (monotonicity)
             # NOTE: For MPNN predictors, small prediction errors might cause slight increases
