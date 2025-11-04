@@ -225,8 +225,8 @@ class OEDMethod(ABC):
                         torch.cuda.empty_cache()
                     from ..core.mocu_pycuda import MOCU_pycuda
                     for l in range(self.it_idx):
-                        it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT, 
-                                                     self.MReal, self.TReal, 
+                        it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT,
+                                                     self.MReal, self.TReal,
                                                      a_lower_init, a_upper_init, 0)
                     self._last_valid_mocu = np.mean(it_temp_val)
                 except (ImportError, RuntimeError) as e:
@@ -341,6 +341,16 @@ class OEDMethod(ABC):
                     if hasattr(self, 'model') and hasattr(self, 'mean') and hasattr(self, 'std'):
                         # Use the same predictor function as DAD
                         from ..models.predictors.predictor_utils import predict_mocu
+                        # Debug: Show bounds that will be passed to predictor
+                        if iteration < 2 and not hasattr(self, '_inn_bounds_debugged'):
+                            sample_i, sample_j = experimentSequence[-1] if experimentSequence else (0, 1)
+                            print(f"[{method_name}] Before predictor call at iteration {iteration+1}:")
+                            print(f"  Selected pair: ({selected_i},{selected_j})")
+                            print(f"  bounds[{selected_i},{selected_j}]=({a_lower_current[selected_i,selected_j]:.4f},{a_upper_current[selected_i,selected_j]:.4f})")
+                            print(f"  bounds[0,1]=({a_lower_current[0,1]:.4f},{a_upper_current[0,1]:.4f})")
+                            print(f"  bounds[0,2]=({a_lower_current[0,2]:.4f},{a_upper_current[0,2]:.4f})")
+                            if iteration == 1:
+                                self._inn_bounds_debugged = True
                         mocu_pred = predict_mocu(
                             self.model, self.mean, self.std,
                             w_init, a_lower_current, a_upper_current,
@@ -398,6 +408,19 @@ class OEDMethod(ABC):
                                 self._mocu_model._debug_prediction = True
                             else:
                                 self._mocu_model._debug_prediction = False
+                            
+                            # Debug: Show bounds that will be passed to predictor
+                            if iteration < 2 and not hasattr(self, '_dad_bounds_debugged'):
+                                print(f"[DAD] Before predictor call at iteration {iteration+1}:")
+                                print(f"  Selected pair: ({selected_i},{selected_j})")
+                                print(f"  bounds[{selected_i},{selected_j}]=({a_lower_current[selected_i,selected_j]:.4f},{a_upper_current[selected_i,selected_j]:.4f})")
+                                print(f"  bounds[0,1]=({a_lower_current[0,1]:.4f},{a_upper_current[0,1]:.4f})")
+                                print(f"  bounds[0,2]=({a_lower_current[0,2]:.4f},{a_upper_current[0,2]:.4f})")
+                                # Check if bounds matrix actually changed
+                                bounds_changed = not np.array_equal(a_lower_current, a_lower_init) or not np.array_equal(a_upper_current, a_upper_init)
+                                print(f"  Bounds changed from initial: {bounds_changed}")
+                                if iteration == 1:
+                                    self._dad_bounds_debugged = True
                             
                             mocu_pred = self._predict_mocu_fn(
                                 self._mocu_model, self._mocu_mean, self._mocu_std,
@@ -492,8 +515,8 @@ class OEDMethod(ABC):
                         # Try PyCUDA computation
                         for l in range(self.it_idx):
                             it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT,
-                                     self.MReal, self.TReal,
-                                     a_lower_current, a_upper_current, 0)
+                                                         self.MReal, self.TReal,
+                                                         a_lower_current, a_upper_current, 0)
                         MOCUCurve[iteration + 1] = np.mean(it_temp_val)
                         # Update last valid MOCU for future fallbacks
                         self._last_valid_mocu = MOCUCurve[iteration + 1]
