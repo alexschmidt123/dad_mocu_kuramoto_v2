@@ -12,6 +12,7 @@ from torch_geometric.nn import NNConv, Set2Set, global_mean_pool, global_max_poo
 from torch_geometric.data import Data, Batch
 from torch.nn import Sequential, Linear, ReLU, GRU
 import numpy as np
+import os
 
 
 class DADPolicyNetwork(nn.Module):
@@ -188,21 +189,42 @@ class DADPolicyNetwork(nn.Module):
         if not history_emb.is_contiguous():
             history_emb = history_emb.contiguous()
         
-        # === FIX: Disable cuDNN for LSTM to avoid conflicts ===
+        # === Use cuDNN for LSTM if available (much faster!) ===
+        # cuDNN provides 3-10x speedup for LSTM operations
+        # Only disable if explicitly requested via environment variable
+        USE_CUDNN_FOR_LSTM = os.getenv('USE_CUDNN_FOR_LSTM', '1') == '1'
+        
         if device.type == 'cuda':
             torch.cuda.synchronize()
         
         cudnn_enabled = torch.backends.cudnn.enabled
         cudnn_benchmark = torch.backends.cudnn.benchmark
+        
         try:
-            # Temporarily disable cuDNN
-            torch.backends.cudnn.enabled = False
-            torch.backends.cudnn.benchmark = False
+            # Enable cuDNN for LSTM if requested (default: enabled for speed)
+            if USE_CUDNN_FOR_LSTM:
+                # Keep cuDNN enabled - use optimized LSTM implementation
+                pass  # cuDNN already enabled
+            else:
+                # Temporarily disable cuDNN (for debugging compatibility issues)
+                torch.backends.cudnn.enabled = False
+                torch.backends.cudnn.benchmark = False
             
             lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
             
             if device.type == 'cuda':
                 torch.cuda.synchronize()
+        except RuntimeError as e:
+            # If cuDNN LSTM fails, fall back to non-cuDNN
+            if 'CUDNN' in str(e) or 'cuDNN' in str(e):
+                if not hasattr(self, '_cudnn_lstm_warned'):
+                    print(f"[WARNING] cuDNN LSTM failed, falling back to non-cuDNN: {e}")
+                    self._cudnn_lstm_warned = True
+                torch.backends.cudnn.enabled = False
+                torch.backends.cudnn.benchmark = False
+                lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
+            else:
+                raise
         finally:
             # Restore cuDNN settings
             torch.backends.cudnn.enabled = cudnn_enabled

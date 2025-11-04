@@ -7,135 +7,52 @@ experimental design decisions.
 DAD policy training script using REINFORCE with MPNN predictor.
 """
 
+# Standard library imports
 import sys
-from pathlib import Path
-import argparse
-import time
 import os
+import time
+import argparse
+from pathlib import Path
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
-
-# CRITICAL: Check for PyCUDA context BEFORE importing torch
-# If PyCUDA context exists, PyTorch CUDA will segfault during backward pass
-# This check must happen BEFORE torch is imported to catch the issue early
-try:
-    import pycuda.driver as drv
-    # Check if PyCUDA driver is initialized (which would create a context)
-    # If Context.get_current() fails, it means PyCUDA isn't initialized yet
-    try:
-        ctx = drv.Context.get_current()
-        if ctx is not None:
-            print("\n" + "="*80)
-            print("[FATAL ERROR] PyCUDA context detected BEFORE PyTorch import!")
-            print("="*80)
-            print("[ERROR] PyCUDA and PyTorch CUDA cannot share the same process.")
-            print("[ERROR] This will cause segfaults during training (loss.backward()).")
-            print("\n[SOLUTION] Ensure data generation runs in completely separate process:")
-            print("  1. Use run.sh which runs each step in separate processes")
-            print("  2. Or manually run data generation in separate terminal/script")
-            print("  3. Check if PyCUDA was accidentally imported in this process")
-            print("\n[CURRENT STATE] PyCUDA context active - training will segfault!")
-            print("[ACTION] Exiting to prevent segfault. Fix process isolation and retry.")
-            print("="*80 + "\n")
-            sys.exit(1)
-    except Exception as ctx_err:
-        # Context.get_current() might raise if no context exists
-        # That's fine - it means PyCUDA isn't active
-        pass
-except ImportError:
-    pass  # PyCUDA not installed, that's fine
-except Exception:
-    pass  # Ignore other errors
-
+# Third-party imports
+import numpy as np
 import torch
-# CRITICAL: Enable CUDA error checking to catch errors before segfaults
-# This helps identify invalid memory access, uninitialized pointers, etc.
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous kernel launches for better error reporting
-print("[TRAIN] CUDA_LAUNCH_BLOCKING enabled for better error detection")
-
-# CRITICAL: Disable cuDNN to avoid potential segfaults during backward pass
-# This is a workaround for PyTorch 2.5.1+cu121 compatibility issues
-torch.backends.cudnn.enabled = False
-print("[TRAIN] cuDNN disabled to avoid potential CUDA conflicts")
-
-# CRITICAL: Enable CUDA error checking utility function
-def check_cuda_error(operation_name="operation"):
-    """
-    Check for CUDA errors after an operation.
-    This is equivalent to CUDA error checking in C++ code.
-    """
-    if torch.cuda.is_available():
-        try:
-            # PyTorch's synchronize() will raise RuntimeError if there's a CUDA error
-            torch.cuda.synchronize()
-            return True
-        except RuntimeError as e:
-            print(f"\n{'='*80}")
-            print(f"[CUDA ERROR] Failed during/after: {operation_name}")
-            print(f"[CUDA ERROR] {e}")
-            print(f"{'='*80}\n")
-            # Check CUDA error status
-            try:
-                error_code = torch.cuda.get_device_properties(0)
-                print(f"[CUDA ERROR] Device status check passed")
-            except Exception as device_err:
-                print(f"[CUDA ERROR] Device status check failed: {device_err}")
-            raise
-    return True
-
-# CRITICAL: Force PyTorch to initialize CUDA context explicitly before any operations
-# This ensures we have a clean CUDA context even if previous processes used CUDA
-if torch.cuda.is_available():
-    try:
-        # Force CUDA initialization by setting device and doing a dummy operation
-        device_obj = torch.device('cuda:0')
-        torch.cuda.set_device(0)
-        # Create a dummy tensor to force CUDA context creation
-        dummy_tensor = torch.zeros(1, device=device_obj)
-        check_cuda_error("CUDA context initialization (dummy tensor)")
-        del dummy_tensor
-        torch.cuda.empty_cache()
-        check_cuda_error("CUDA context initialization (empty_cache)")
-        print("[TRAIN] CUDA context initialized explicitly and verified")
-    except Exception as e:
-        print(f"[TRAIN] WARNING: CUDA initialization issue: {e}")
-        print("[TRAIN] Continuing, but segfault may occur")
-
-# Additional check AFTER torch is imported (in case context was created during import)
-try:
-    import pycuda.driver as drv
-    try:
-        ctx = drv.Context.get_current()
-        if ctx is not None:
-            print("\n" + "="*80)
-            print("[FATAL ERROR] PyCUDA context detected AFTER PyTorch import!")
-            print("="*80)
-            print("[ERROR] PyCUDA context was created during script execution.")
-            print("[ERROR] This will cause segfaults during training.")
-            print("="*80 + "\n")
-            sys.exit(1)
-    except:
-        pass
-except ImportError:
-    pass
-except Exception:
-    pass
-
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-import numpy as np
 from tqdm import tqdm
+
+# Project imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(PROJECT_ROOT))
+from src.models.policy_networks import DADPolicyNetwork, create_state_data
+
+# Optional imports (for visualization only)
 try:
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
-    print("[WARNING] matplotlib not available - training curves will not be saved")
 
-from src.models.policy_networks import DADPolicyNetwork, create_state_data
+# ========== CUDA Configuration ==========
+# CUDA_LAUNCH_BLOCKING: Set to '1' for debugging (slower), '0' for production (faster)
+CUDA_LAUNCH_BLOCKING = os.getenv('CUDA_LAUNCH_BLOCKING', '0')
+os.environ['CUDA_LAUNCH_BLOCKING'] = CUDA_LAUNCH_BLOCKING
+
+# cuDNN: PyTorch enables it by default for optimal performance
+# Only disable if explicitly requested via DISABLE_CUDNN='1' (for debugging)
+if os.getenv('DISABLE_CUDNN', '0') == '1':
+    torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.benchmark = False
+    print("[TRAIN] cuDNN disabled (via DISABLE_CUDNN='1')")
+else:
+    # PyTorch enables cuDNN by default, but enable benchmark mode for optimal performance
+    torch.backends.cudnn.benchmark = True
+
+# Initialize CUDA context explicitly
+if torch.cuda.is_available():
+    torch.cuda.set_device(0)
+    torch.cuda.empty_cache()
 
 
 class DADTrajectoryDataset(Dataset):
@@ -323,9 +240,8 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     M = int(T / h)
     
     # CRITICAL: Ensure clean CUDA state before training loop
-    # This is especially important if PyCUDA was used in previous steps
     if torch.cuda.is_available():
-        # Force PyTorch to create its own CUDA context (may conflict with PyCUDA)
+        # Force PyTorch to create its own CUDA context
         # Try to reset/clear any existing CUDA state
         try:
             torch.cuda.empty_cache()
@@ -337,16 +253,15 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             torch.cuda.empty_cache()
         except Exception as e:
             print(f"[WARNING] CUDA context reset encountered issue: {e}")
-            print("[WARNING] Continuing anyway - segfault may occur if PyCUDA was used")
+            print("[WARNING] Continuing anyway - may have CUDA issues")
     
     # Use tqdm for progress bar
     epoch_desc = f"Epoch {epoch_num+1}" if epoch_num is not None else "Epoch"
     traj_pbar = tqdm(enumerate(trajectories), total=len(trajectories), desc=epoch_desc, unit="traj", ncols=100, leave=False)
     
     for traj_idx, traj in traj_pbar:
-        # Periodically clear cache
-        if traj_idx > 0 and traj_idx % 10 == 0 and torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # Periodically clear cache (less frequently to reduce overhead)
+        if traj_idx > 0 and traj_idx % 50 == 0 and torch.cuda.is_available():
             torch.cuda.empty_cache()
             
         optimizer.zero_grad()
@@ -368,11 +283,6 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         
         for step in range(K):
             # === POLICY NETWORK FORWARD PASS ===
-            # Ensure clean state before policy operations
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-            
             state_data = create_state_data(w, a_lower, a_upper, device=device)
             
             if step == 0:
@@ -394,9 +304,6 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Policy forward pass
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)
             
-            # CRITICAL: Ensure policy forward completes before continuing
-            if torch.cuda.is_available():
-                check_cuda_error(f"Policy forward pass (traj {traj_idx}, step {step + 1})")
             
             dist = torch.distributions.Categorical(probs=action_probs)
             action_idx = dist.sample()
@@ -412,8 +319,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             observations_list.append(observation)
             log_probs.append(log_prob)
             
-            # CRITICAL: Ensure all ops complete before next iteration
-            if torch.cuda.is_available():
+            # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
+            # For production, let CUDA operations run asynchronously
+            if torch.cuda.is_available() and CUDA_LAUNCH_BLOCKING == '1':
                 torch.cuda.synchronize()
         
         # === MOCU COMPUTATION ===
@@ -422,23 +330,18 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             terminal_MOCU = traj['terminal_MOCU']
         elif use_predicted_mocu and mocu_model is not None:
             # FALLBACK: Compute MOCU using MPNN predictor during training
-            # CRITICAL: Ensure policy network operations are fully complete before MPNN
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-            
-            # CRITICAL: Use no_grad context for MPNN prediction to prevent gradient issues
+            # Use no_grad context for MPNN prediction to prevent gradient issues
             with torch.no_grad():
                 terminal_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
             
-            # CRITICAL: Ensure MPNN prediction fully completes and detach from computation graph
-            if torch.cuda.is_available():
+            # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
+            if torch.cuda.is_available() and CUDA_LAUNCH_BLOCKING == '1':
                 torch.cuda.synchronize()
-                torch.cuda.empty_cache()
         else:
-            # LAST RESORT: Direct MOCU computation (slow)
-            from src.core.mocu_pycuda import MOCU_pycuda
-            terminal_MOCU = MOCU_pycuda(K_max, w, N, h, M, T, a_lower, a_upper, 0)
+            # LAST RESORT: Direct MOCU computation using torchdiffeq
+            from src.core.mocu_torchdiffeq import MOCU_torchdiffeq
+            device_str = str(device) if isinstance(device, torch.device) else device
+            terminal_MOCU = MOCU_torchdiffeq(K_max, w, N, h, M, T, a_lower, a_upper, 0, device=device_str)
         
         # CRITICAL: Ensure terminal_MOCU is a Python float (not a tensor) before using in computation
         # This prevents any gradient graph connections to MPNN model
@@ -480,11 +383,8 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         if len(valid_log_probs) != len(log_probs):
             raise RuntimeError(f"Only {len(valid_log_probs)}/{len(log_probs)} log_probs are valid")
         
-        # CRITICAL: Ensure CUDA operations are synchronized before building loss graph
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        
         # Build loss computation graph (only involves policy network, not MPNN)
+        # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
         # Use validated log_probs to prevent memory access errors
         policy_loss = []
         for idx, (log_prob, advantage_val) in enumerate(zip(valid_log_probs, returns)):
@@ -539,7 +439,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             raise
         
         # CRITICAL: Ensure loss tensor is a pure PyTorch tensor, not mixed with numpy
-        # This prevents issues where CUDA tensors might be confused with PyCUDA DeviceAllocation objects
+        # Validate loss tensor is a valid PyTorch tensor
         if not isinstance(loss, torch.Tensor):
             raise RuntimeError(f"Loss is not a PyTorch tensor: {type(loss)}")
         
@@ -551,7 +451,6 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         
         # CRITICAL: Verify device consistency - all tensors in computation graph must be on same device
         if loss.device.type == 'cuda':
-            # Ensure we're not mixing PyCUDA and PyTorch CUDA contexts
             # Check that loss.data_ptr() points to valid CUDA memory (PyTorch managed)
             try:
                 # This will raise if tensor is corrupted or not a valid PyTorch CUDA tensor
@@ -559,45 +458,18 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 assert loss_ptr > 0, "Loss tensor has invalid data pointer"
             except Exception as e:
                 print(f"[REINFORCE] ERROR: Loss tensor has invalid CUDA memory pointer: {e}")
-                print(f"[REINFORCE] This may indicate mixing of PyCUDA and PyTorch CUDA objects")
                 raise RuntimeError(f"Loss tensor CUDA memory corruption: {e}") from e
         
         # === BACKWARD PASS ===
         # CRITICAL: Ensure MOCU computation is completely done and MPNN model is isolated
-        if use_predicted_mocu and mocu_model is not None and torch.cuda.is_available():
-            # Ensure all MPNN operations are complete
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+        if use_predicted_mocu and mocu_model is not None:
             # Ensure MPNN model is in eval mode and not accumulating gradients
             mocu_model.eval()
-            # Clear any potential hanging references
-            with torch.no_grad():
-                # This ensures no gradient computation on MPNN side
-                pass
         
-        # CRITICAL: Ensure all CUDA operations are synchronized before backward
-        # Also verify CUDA context is still valid
-        if torch.cuda.is_available():
-            try:
-                # Verify CUDA context is active
-                current_device = torch.cuda.current_device()
-                device_obj = torch.device(f'cuda:{current_device}')
-                
-                # Force a small operation to verify CUDA context is working
-                test_tensor = torch.zeros(1, device=device_obj)
-                torch.cuda.synchronize()
-                del test_tensor
-                
-                # Clear cache and synchronize before backward
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            except Exception as e:
-                # Try to recover by reinitializing
-                try:
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                except:
-                    pass
+        # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
+        # For production, PyTorch handles CUDA synchronization automatically
+        if torch.cuda.is_available() and CUDA_LAUNCH_BLOCKING == '1':
+            torch.cuda.synchronize()
         
         # CRITICAL: Segfault diagnosis
         # The segfault occurs in PyTorch's C++ autograd engine during backward()
@@ -619,18 +491,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 except Exception:
                     pass  # Silent check
             
-            # Set retain_graph to False explicitly (default, but being explicit)
-            # CRITICAL: This is where segfault occurs - it's in PyTorch's C++ autograd engine
-            # Add CUDA error checking right before backward to catch any issues
-            if loss.device.type == 'cuda':
-                check_cuda_error(f"Before backward pass (traj {traj_idx})")
-            
-            # CRITICAL: Perform backward pass with error checking
+            # Perform backward pass
             try:
                 loss.backward(retain_graph=False)
-                # Immediately check for CUDA errors after backward
-                if loss.device.type == 'cuda':
-                    check_cuda_error(f"After backward pass (traj {traj_idx})")
             except RuntimeError as backward_error:
                 # PyTorch's backward may raise RuntimeError for CUDA errors
                 print(f"\n{'='*80}")
@@ -638,12 +501,6 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 print(f"[BACKWARD ERROR] {backward_error}")
                 print(f"[BACKWARD ERROR] This indicates a CUDA error in autograd engine")
                 print(f"{'='*80}\n")
-                # Try to get more CUDA error information
-                if torch.cuda.is_available():
-                    try:
-                        check_cuda_error("After backward error (diagnostic)")
-                    except Exception as cuda_err:
-                        print(f"[BACKWARD ERROR] Additional CUDA error: {cuda_err}")
                 raise
         except RuntimeError as e:
             print(f"[REINFORCE] ERROR during backward: {e}")
@@ -669,10 +526,6 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 except:
                     print("[REINFORCE] Could not query CUDA state")
             raise
-        
-        # Ensure backward completes and check for CUDA errors
-        if torch.cuda.is_available():
-            check_cuda_error(f"Backward completion verification (traj {traj_idx})")
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -790,9 +643,9 @@ def main():
             else:
                 # No pre-computed MOCU - need to use MPNN predictor during training
                 print("[REINFORCE] No pre-computed MOCU - will use MPNN predictor during training")
-                
-                # Auto-enable MPNN predictor if not explicitly disabled
-                use_predicted_mocu = args.use_predicted_mocu if args.use_predicted_mocu else True
+            
+            # Auto-enable MPNN predictor if not explicitly disabled
+            use_predicted_mocu = args.use_predicted_mocu if args.use_predicted_mocu else True
             
             if not use_predicted_mocu and not has_precomputed_mocu:
                 print("\n" + "!"*80)
@@ -813,7 +666,7 @@ def main():
                         import os
                         import re
                         # Path is already imported at module level
-                        
+                    
                         # Get model name from environment variable, config, or auto-detect from output_dir
                         model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name')
                         
@@ -879,10 +732,10 @@ def main():
                                 traceback.print_exc()
                                 # Don't fail - let it try during actual training, but warn user
                         
-                        if mocu_model is not None:
-                            print(f"[REINFORCE] Using MPNN predictor: {model_name}")
-                        else:
-                            print(f"[REINFORCE] Using pre-computed MOCU values")
+                            if mocu_model is not None:
+                                print(f"[REINFORCE] Using MPNN predictor: {model_name}")
+                            else:
+                                print(f"[REINFORCE] Using pre-computed MOCU values")
                     except FileNotFoundError as e:
                         print(f"\n" + "!"*80)
                         print(f"[REINFORCE] ERROR: MPNN predictor not found!")
@@ -908,11 +761,11 @@ def main():
                         print(f"!"*80 + "\n")
                         import traceback
                         traceback.print_exc()
-                        raise RuntimeError(
-                            f"MPNN predictor is REQUIRED for REINFORCE training. "
-                            f"Failed to load MPNN predictor '{model_name}'. "
-                            f"Please check model path and train MPNN first."
-                        ) from e
+                    raise RuntimeError(
+                        f"MPNN predictor is REQUIRED for REINFORCE training. "
+                        f"Failed to load MPNN predictor '{model_name}'. "
+                        f"Please check model path and train MPNN first."
+                    ) from e
             
             loss, reward = train_reinforce(
                 model, trajectories, optimizer, device, N, 

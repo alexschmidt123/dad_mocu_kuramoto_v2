@@ -27,7 +27,7 @@ from src.models.predictors.mlp import MLPPredictor
 from src.models.predictors.cnn import CNNPredictor
 from src.models.predictors.mpnn_plus import MPNNPlusPredictor
 from src.models.predictors.sampling_mocu import SamplingBasedMOCU
-# PyCUDA MOCU is used for all MOCU computation (mocu.py removed)
+# Sampling-based MOCU uses torchdiffeq (replaced PyCUDA)
 
 
 def load_test_data(test_data_path):
@@ -119,13 +119,14 @@ def evaluate_predictor(predictor, test_loader, device, predictor_name):
     return metrics, predictions, targets
 
 
-def evaluate_sampling_based(test_data, N, K_max, deltaT, MReal, TReal):
+def evaluate_sampling_based(test_data, N, K_max, deltaT, MReal, TReal, device='cuda'):
     """Evaluate sampling-based (ground truth) method."""
     print(f"\n{'='*80}")
     print(f"Evaluating Sampling-Based (Ground Truth)")
     print(f"{'='*80}")
     
-    sampler = SamplingBasedMOCU(K_max=K_max, h=deltaT, T=TReal)
+    device_str = str(device) if isinstance(device, torch.device) else device
+    sampler = SamplingBasedMOCU(K_max=K_max, h=deltaT, T=TReal, device=device_str)
     
     predictions = []
     targets = []

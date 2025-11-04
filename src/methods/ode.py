@@ -19,13 +19,14 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
 
-# Use PyCUDA for ODE methods (as in original paper 2023)
+# Use torchdiffeq for ODE methods (replaced PyCUDA for compatibility)
 try:
-    from src.core.mocu_pycuda import MOCU_pycuda as MOCU_pycuda_impl
-    PYCUDA_AVAILABLE = True
+    import torch
+    from src.core.mocu_torchdiffeq import MOCU_torchdiffeq
+    TORCHDIFFEQ_AVAILABLE = True
 except (ImportError, RuntimeError):
-    PYCUDA_AVAILABLE = False
-    print("[WARNING] PyCUDA not available for ODE methods. ODE methods will fail.")
+    TORCHDIFFEQ_AVAILABLE = False
+    print("[WARNING] torchdiffeq not available for ODE methods. Install with: pip install torchdiffeq")
 
 
 class ODE_Method(OEDMethod):
@@ -57,10 +58,13 @@ class ODE_Method(OEDMethod):
         self.TVirtual = TVirtual if TVirtual is not None else TReal
         self.R_matrix = np.zeros((N, N))
         
-        if not PYCUDA_AVAILABLE:
-            raise RuntimeError("PyCUDA is REQUIRED for ODE methods but not available. Install with: pip install pycuda")
+        # Determine device
+        self.device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
         
-        print(f"[ODE] Initialized (static version, using PyCUDA)")
+        if not TORCHDIFFEQ_AVAILABLE:
+            raise RuntimeError("torchdiffeq is REQUIRED for ODE methods but not available. Install with: pip install torchdiffeq")
+        
+        print(f"[ODE] Initialized (static version, using torchdiffeq, device: {self.device})")
     
     def _compute_expected_mocu_matrix(self, w, a_lower_bounds, a_upper_bounds):
         """
@@ -94,13 +98,13 @@ class ODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for synchronized scenario (using PyCUDA)
+                # Compute MOCU for synchronized scenario (using torchdiffeq)
                 mocu_vals_syn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_syn[l] = MOCU_pycuda_impl(
+                    mocu_vals_syn[l] = MOCU_torchdiffeq(
                         self.K_max, w, self.N, self.deltaT, 
                         self.MVirtual, self.TVirtual,
-                        a_lower_syn, a_upper_syn, seed=0
+                        a_lower_syn, a_upper_syn, seed=0, device=self.device
                     )
                 MOCU_syn = np.mean(mocu_vals_syn)
                 
@@ -115,13 +119,13 @@ class ODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for non-synchronized scenario (using PyCUDA)
+                # Compute MOCU for non-synchronized scenario (using torchdiffeq)
                 mocu_vals_nonsyn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_nonsyn[l] = MOCU_pycuda_impl(
+                    mocu_vals_nonsyn[l] = MOCU_torchdiffeq(
                         self.K_max, w, self.N, self.deltaT,
                         self.MVirtual, self.TVirtual,
-                        a_lower_nonsyn, a_upper_nonsyn, seed=0
+                        a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
                     )
                 MOCU_nonsyn = np.mean(mocu_vals_nonsyn)
                 
@@ -193,10 +197,13 @@ class iODE_Method(OEDMethod):
         self.MVirtual = MVirtual if MVirtual is not None else MReal
         self.TVirtual = TVirtual if TVirtual is not None else TReal
         
-        if not PYCUDA_AVAILABLE:
-            raise RuntimeError("PyCUDA is REQUIRED for iODE methods but not available. Install with: pip install pycuda")
+        # Determine device
+        self.device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
         
-        print(f"[iODE] Initialized (iterative version, using PyCUDA)")
+        if not TORCHDIFFEQ_AVAILABLE:
+            raise RuntimeError("torchdiffeq is REQUIRED for iODE methods but not available. Install with: pip install torchdiffeq")
+        
+        print(f"[iODE] Initialized (iterative version, using torchdiffeq, device: {self.device})")
     
     def _compute_expected_mocu_matrix(self, w, a_lower_bounds, a_upper_bounds):
         """
@@ -225,13 +232,13 @@ class iODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for synchronized scenario (using PyCUDA)
+                # Compute MOCU for synchronized scenario (using torchdiffeq)
                 mocu_vals_syn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_syn[l] = MOCU_pycuda_impl(
+                    mocu_vals_syn[l] = MOCU_torchdiffeq(
                         self.K_max, w, self.N, self.deltaT,
                         self.MVirtual, self.TVirtual,
-                        a_lower_syn, a_upper_syn, seed=0
+                        a_lower_syn, a_upper_syn, seed=0, device=self.device
                     )
                 MOCU_syn = np.mean(mocu_vals_syn)
                 
@@ -246,13 +253,13 @@ class iODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for non-synchronized scenario (using PyCUDA)
+                # Compute MOCU for non-synchronized scenario (using torchdiffeq)
                 mocu_vals_nonsyn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_nonsyn[l] = MOCU_pycuda_impl(
+                    mocu_vals_nonsyn[l] = MOCU_torchdiffeq(
                         self.K_max, w, self.N, self.deltaT,
                         self.MVirtual, self.TVirtual,
-                        a_lower_nonsyn, a_upper_nonsyn, seed=0
+                        a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
                     )
                 MOCU_nonsyn = np.mean(mocu_vals_nonsyn)
                 

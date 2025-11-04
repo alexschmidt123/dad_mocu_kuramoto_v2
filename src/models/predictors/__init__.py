@@ -46,7 +46,7 @@ from .utils import (
 # Import it from the separate file when needed:
 #   from src.models.predictors.sampling_mocu import SamplingBasedMOCU
 # 
-# NOTE: ODE method uses MOCU_pycuda() directly from mocu_pycuda.py, NOT SamplingBasedMOCU
+# NOTE: ODE method uses MOCU_torchdiffeq() directly from mocu_torchdiffeq.py, NOT SamplingBasedMOCU
 
 __all__ = [
     # Predictors

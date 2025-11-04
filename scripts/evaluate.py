@@ -1,9 +1,9 @@
 """
 Enhanced Evaluation Script with Smart Method Ordering
 
-This script automatically orders methods to run PyCUDA-based methods (ODE, RANDOM, ENTROPY)
-before PyTorch-based methods (iNN, NN, DAD) to avoid context conflicts while maintaining
-maximum performance.
+This script evaluates OED methods. All methods now use torchdiffeq (replaced PyCUDA)
+for MOCU computation, eliminating CUDA context conflicts. PyCUDA is only used for
+initial MPNN training data generation (in separate process).
 
 Usage:
     python scripts/evaluate.py
@@ -65,49 +65,28 @@ if __name__ == '__main__':
     # Natural frequencies
     w = np.array([-2.5000, -0.6667, 1.1667, 2.0000, 5.8333])
     
-    # ========== Smart Method Ordering ==========
-    # Categorize methods by CUDA backend
-    PYCUDA_METHODS = ['RANDOM', 'ENTROPY', 'ODE', 'iODE']
-    PYTORCH_METHODS = ['iNN', 'NN', 'DAD']
+    # ========== Method Selection ==========
+    # All methods now use torchdiffeq (replaced PyCUDA), so no special ordering needed
     
     if args.methods:
         method_names = [m.strip() for m in args.methods.split(',')]
     else:
         method_names = ['iNN', 'NN', 'ODE', 'ENTROPY', 'RANDOM']
     
-    # Sort methods: PyCUDA first, PyTorch second (unless --force-pytorch)
+    # Note: --force-pytorch flag is deprecated (all methods use PyTorch/torchdiffeq now)
     if args.force_pytorch:
-        print(f"\n🔧 Force PyTorch mode enabled - all methods will use PyTorch CUDA")
-        print(f"   (ODE will be slower but no context conflicts)")
-        use_pycuda_ordering = False
-    else:
-        # Check if we have both PyCUDA and PyTorch methods
-        has_pycuda = any(m in PYCUDA_METHODS for m in method_names)
-        has_pytorch = any(m in PYTORCH_METHODS for m in method_names)
-        use_pycuda_ordering = has_pycuda and has_pytorch
-        
-        if use_pycuda_ordering:
-            pycuda_list = [m for m in method_names if m in PYCUDA_METHODS]
-            pytorch_list = [m for m in method_names if m in PYTORCH_METHODS]
-            method_names = pycuda_list + pytorch_list
-            
-            print(f"\n🔧 Smart method ordering enabled:")
-            print(f"   PyCUDA methods (first):  {pycuda_list}")
-            print(f"   PyTorch methods (after): {pytorch_list}")
-            print(f"   → This maximizes ODE performance while avoiding conflicts")
-        elif has_pycuda:
-            print(f"\n🔧 Only PyCUDA methods detected - using PyCUDA (fast)")
-        elif has_pytorch:
-            print(f"\n🔧 Only PyTorch methods detected - using PyTorch CUDA")
+        print(f"\n🔧 Note: All methods now use torchdiffeq (PyTorch-based)")
+        print(f"   (--force-pytorch flag is deprecated but kept for compatibility)")
     
     print(f"\n📋 Method execution order: {method_names}")
     
     # ========== Choose MOCU backend for initial computation ==========
-    # Use PyCUDA for initial MOCU (as in original paper 2023)
-    # This ensures compatibility with PyCUDA-based methods (ODE, RANDOM, ENTROPY)
-    # PyTorch methods (iNN, NN, DAD) don't need initial MOCU computation
-    from src.core.mocu_pycuda import MOCU_pycuda as MOCU_initial
-    mocu_backend = "PyCUDA (original paper 2023)"
+    # Use torchdiffeq for initial MOCU (replaced PyCUDA for compatibility)
+    # torchdiffeq is fully compatible with PyTorch CUDA - no context conflicts
+    import torch
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    from src.core.mocu_torchdiffeq import MOCU_torchdiffeq as MOCU_initial
+    mocu_backend = f"torchdiffeq (device: {device})"
     
     print(f"   Initial MOCU computation: {mocu_backend}")
     print()
@@ -193,14 +172,22 @@ if __name__ == '__main__':
         timeMOCU = time.time()
         it_temp_val = np.zeros(it_idx)
         
+        # NOTE: torchdiffeq processes samples sequentially (unlike PyCUDA's parallel kernels)
+        # For K_max=1024, this can take ~30-40 minutes per MOCU computation
+        # Consider reducing K_max for faster evaluation (e.g., K_max=256 for ~10min)
+        print(f"  Computing initial MOCU: {it_idx} iterations × K_max={K_max} samples")
+        print(f"  Note: torchdiffeq is slower than PyCUDA (sequential processing)")
+        print(f"  Expected time: ~{K_max // 30} minutes per iteration")
+        
         with tqdm(total=it_idx, desc=f"  Initial MOCU ({mocu_backend})", leave=False, unit="iter", ncols=100) as pbar:
             for l in range(it_idx):
                 it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal, 
-                                              aInitialLower.copy(), aInitialUpper.copy(), 0)
+                                              aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
                 pbar.update(1)
         
         MOCUInitial = np.mean(it_temp_val)
-        print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {time.time() - timeMOCU:.2f}s)")
+        elapsed = time.time() - timeMOCU
+        print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {elapsed:.2f}s / {elapsed/60:.1f}min)")
         
         # ========== Evaluate each method ==========
         method_pbar = tqdm(method_names, desc=f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}", 

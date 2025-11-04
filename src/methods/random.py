@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
-# MOCU computation handled by base class via PyCUDA
+# MOCU computation handled by base class via torchdiffeq
 
 
 class RANDOM_Method(OEDMethod):

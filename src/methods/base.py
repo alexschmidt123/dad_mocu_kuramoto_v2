@@ -11,7 +11,7 @@ import os
 from typing import Tuple, List, Dict, Any
 
 # Import torch for device checks
-# Lazy import torch to avoid initializing PyTorch CUDA before PyCUDA methods run
+# Lazy import torch to avoid initializing PyTorch CUDA unnecessarily
 # Import will happen lazily when needed (for PyTorch-based methods)
 torch = None
 
@@ -181,17 +181,14 @@ class OEDMethod(ABC):
         history = []
         
         # Compute initial MOCU
-        # CRITICAL: initial_mocu is passed from evaluate.py (computed with PyCUDA before methods)
-        # Use it as fallback if PyCUDA fails in method initialization
+        # initial_mocu is passed from evaluate.py (computed with torchdiffeq)
+        # Use it to avoid redundant computation
         it_temp_val = np.zeros(self.it_idx)
         
-        # Check method type to determine if PyCUDA should be used
+        # Check method type
         method_name = self.__class__.__name__
         is_mpnn_method = method_name in ['iNN_Method', 'NN_Method']
         is_dad_method = method_name == 'DAD_MOCU_Method'
-        
-        # Track if we've warned about PyCUDA for this method (to avoid spam)
-        self._pycuda_warned = getattr(self, '_pycuda_warned', False)
         
         if is_mpnn_method:
             # For MPNN methods, use initial MOCU from evaluate.py
@@ -209,32 +206,41 @@ class OEDMethod(ABC):
                 it_temp_val.fill(0.0)
         else:
             # For ODE/RANDOM/ENTROPY methods, use initial MOCU from evaluate.py
-            # FIXED: Avoid redundant recomputation - evaluate.py already computed initial MOCU
-            # This prevents PyCUDA/PyTorch conflicts and improves performance
+            # Avoid redundant recomputation - evaluate.py already computed initial MOCU
             if initial_mocu is not None:
                 # Use the pre-computed initial MOCU from evaluate.py (avoids redundant computation)
                 it_temp_val.fill(initial_mocu)
                 self._last_valid_mocu = initial_mocu  # Store for iterative fallback
             else:
                 # Fallback: Only recompute if initial_mocu was not provided (shouldn't happen in normal flow)
-                # This case handles edge cases where evaluate.py didn't compute initial MOCU
+                # Use torchdiffeq for fallback computation (replaced PyCUDA)
                 try:
-                    # Clear PyTorch CUDA if it exists before PyCUDA (to avoid conflicts)
-                    if torch is not None and torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                        torch.cuda.empty_cache()
-                    from ..core.mocu_pycuda import MOCU_pycuda
+                    # Lazy import torch if needed
+                    global torch
+                    if torch is None:
+                        try:
+                            import torch as _torch
+                            torch = _torch
+                        except ImportError:
+                            torch = None
+                    
+                    # Determine device
+                    device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
+                    
+                    from ..core.mocu_torchdiffeq import MOCU_torchdiffeq
                     for l in range(self.it_idx):
-                        it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT,
-                                                     self.MReal, self.TReal,
-                                                     a_lower_init, a_upper_init, 0)
+                        it_temp_val[l] = MOCU_torchdiffeq(
+                            self.K_max, w_init, N, self.deltaT,
+                            self.MReal, self.TReal,
+                            a_lower_init, a_upper_init, 0, device=device
+                        )
                     self._last_valid_mocu = np.mean(it_temp_val)
                 except (ImportError, RuntimeError) as e:
-                    # PyCUDA failed - use zero as last resort
-                    if not self._pycuda_warned:
-                        print(f"[WARNING] PyCUDA unavailable and no initial_mocu provided: {e}")
+                    # torchdiffeq failed - use zero as last resort
+                    if not hasattr(self, '_torchdiffeq_warned'):
+                        print(f"[WARNING] torchdiffeq unavailable and no initial_mocu provided: {e}")
                         print(f"[WARNING] Using zero for initial MOCU (this may affect results)")
-                        self._pycuda_warned = True
+                        self._torchdiffeq_warned = True
                     it_temp_val.fill(0.0)
                     self._last_valid_mocu = 0.0
 
@@ -247,11 +253,11 @@ class OEDMethod(ABC):
         is_mpnn_method = method_name in ['iNN_Method', 'NN_Method']
         is_dad_method = method_name == 'DAD_MOCU_Method'
         
-        # CRITICAL: Only import torch for PyTorch-based methods (iNN, NN, DAD)
-        # Do NOT import torch for PyCUDA methods (RANDOM, ODE, ENTROPY) - it will initialize PyTorch CUDA!
+        # Import torch for PyTorch-based methods (iNN, NN, DAD)
+        # All methods now use torchdiffeq, so torch is safe to import
         if is_mpnn_method or is_dad_method:
             # Ensure all CUDA operations are complete before MPNN usage
-            # Lazy import torch only when needed (for PyTorch methods)
+            # Lazy import torch only when needed
             try:
                 if torch is None:
                     import torch as _torch
@@ -267,8 +273,8 @@ class OEDMethod(ABC):
         for iteration in range(update_cnt):
             iterationStartTime = time.time()
             
-            # CRITICAL: Only synchronize CUDA for PyTorch-based methods
-            # Do NOT import torch for PyCUDA methods (RANDOM, ODE, ENTROPY)
+            # Synchronize CUDA for PyTorch-based methods
+            # All methods now use torchdiffeq, so torch is safe to import
             if is_mpnn_method or is_dad_method:
                 # Ensure all CUDA operations are complete before MPNN usage
                 try:
@@ -287,7 +293,7 @@ class OEDMethod(ABC):
                 criticalK_init, isSynchronized_init, history
             )
             
-            # CRITICAL: Only synchronize CUDA for PyTorch-based methods
+            # Synchronize CUDA for PyTorch-based methods
             if is_mpnn_method or is_dad_method:
                 # Ensure MPNN operations are complete before next iteration
                 # Lazy import torch only when needed
@@ -453,105 +459,62 @@ class OEDMethod(ABC):
                         self._dad_exception_warned = True
                     MOCUCurve[iteration + 1] = MOCUCurve[iteration]
             else:
-                # For ODE/RANDOM/ENTROPY methods, use PyCUDA (as in original paper 2023)
-                # CRITICAL: These methods MUST run BEFORE PyTorch CUDA is initialized
-                # Use same troubleshooting approach as DAD training
+                # For ODE/RANDOM/ENTROPY methods, use torchdiffeq (replaced PyCUDA)
+                # torchdiffeq is fully compatible with PyTorch CUDA - no context conflicts
                 it_temp_val = np.zeros(self.it_idx)
                 
-                # CRITICAL: Do NOT import torch here - it will initialize PyTorch CUDA
-                # This is a PyCUDA method (RANDOM/ODE/ENTROPY) - must avoid PyTorch CUDA
-                # Clear any potential PyTorch CUDA context (lazy check)
-                try:
-                    # Only check/clear if torch was already imported (shouldn't happen for PyCUDA methods)
-                    if torch is not None:
-                        if torch.cuda.is_available():
-                            torch.cuda.synchronize()
-                            torch.cuda.empty_cache()
-                            # Small delay to let CUDA operations complete
-                            time.sleep(0.01)
-                except:
-                    pass
-                
-                # CRITICAL: Check if PyCUDA context can be used
-                # Do NOT check torch.cuda.is_initialized() here - it might trigger PyTorch CUDA initialization!
-                pycuda_available = True
-                conflict_detected = False
-                
-                try:
-                    import pycuda.driver as drv
-                    # Check if PyCUDA context exists and can be used
+                # Lazy import torch if needed
+                if torch is None:
                     try:
-                        pycuda_ctx = drv.Context.get_current()
-                        if pycuda_ctx is not None:
-                            # PyCUDA context exists - should work
-                            pass
-                    except:
-                        # No PyCUDA context - might work anyway (lazy initialization)
+                        import torch as _torch
+                        globals()['torch'] = _torch
+                    except ImportError:
                         pass
-                    
-                    # Only check PyTorch CUDA if torch was already imported (avoid importing it here)
-                    if torch is not None:
-                        try:
-                            if torch.cuda.is_initialized():
-                                # PyTorch CUDA is active - PyCUDA will fail due to context conflict
-                                conflict_detected = True
-                                pycuda_available = False
-                                if not hasattr(self, '_pycuda_conflict_warned'):
-                                    print(f"[{method_name}] Warning: PyTorch CUDA is initialized - PyCUDA will fail (context conflict)")
-                                    print(f"[{method_name}] Using fallback MOCU computation")
-                                    self._pycuda_conflict_warned = True
-                        except:
-                            # torch.cuda.is_initialized() might not be available
-                            pass
-                except ImportError:
-                    pycuda_available = False
-                    if not hasattr(self, '_pycuda_import_warned'):
-                        print(f"[{method_name}] Warning: PyCUDA not available (ImportError)")
-                        self._pycuda_import_warned = True
                 
-                if pycuda_available and not conflict_detected:
-                    try:
-                        from ..core.mocu_pycuda import MOCU_pycuda
-                        # Try PyCUDA computation
-                        for l in range(self.it_idx):
-                            it_temp_val[l] = MOCU_pycuda(self.K_max, w_init, N, self.deltaT,
-                                                         self.MReal, self.TReal,
-                                                         a_lower_current, a_upper_current, 0)
-                        MOCUCurve[iteration + 1] = np.mean(it_temp_val)
-                        # Update last valid MOCU for future fallbacks
-                        self._last_valid_mocu = MOCUCurve[iteration + 1]
-                        # Debug: Print first successful computation
-                        if iteration == 0 and not hasattr(self, '_pycuda_success_printed'):
-                            print(f"[{method_name}] PyCUDA iterative MOCU computed: {MOCUCurve[iteration + 1]:.6f}")
-                            self._pycuda_success_printed = True
-                    except Exception as e:
-                        # PyCUDA failed - catch ALL exceptions
-                        # CRITICAL: Do NOT use slow PyTorch MOCU or CPU computation
-                        # Instead, use cached value and warn user
-                        if not hasattr(self, '_pycuda_iter_warned'):
-                            print(f"[{method_name}] ERROR: PyCUDA failed for iterative MOCU (iteration {iteration+1}): {type(e).__name__}: {e}")
-                            print(f"[{method_name}] WARNING: Using cached MOCU value - MOCU will not update correctly!")
-                            print(f"[{method_name}] SOLUTION: Run PyCUDA methods (RANDOM/ODE/ENTROPY) BEFORE PyTorch methods to avoid conflicts")
-                            self._pycuda_iter_warned = True
-                        # Use last valid MOCU or previous value (no slow fallback)
-                        if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
-                            MOCUCurve[iteration + 1] = self._last_valid_mocu
-                        else:
-                            MOCUCurve[iteration + 1] = MOCUCurve[iteration]
-                else:
-                    # PyCUDA not available or conflict detected
-                    # CRITICAL: Do NOT use slow PyTorch MOCU or CPU computation
-                    # Use cached value and warn user about method ordering
-                    if not hasattr(self, '_pycuda_fallback_warned'):
-                        if conflict_detected:
-                            print(f"[{method_name}] ERROR: PyTorch CUDA conflict detected - PyCUDA cannot work!")
-                            print(f"[{method_name}] WARNING: Using cached MOCU value - MOCU will not update correctly!")
-                            print(f"[{method_name}] SOLUTION: Run PyCUDA methods (RANDOM/ODE/ENTROPY) BEFORE PyTorch methods (iNN/NN/DAD)")
-                        elif not pycuda_available:
-                            print(f"[{method_name}] ERROR: PyCUDA not available!")
-                            print(f"[{method_name}] WARNING: Using cached MOCU value - MOCU will not update correctly!")
-                        self._pycuda_fallback_warned = True
-                    # Use last valid MOCU or previous value (no slow fallback)
+                # Determine device
+                device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
+                
+                try:
+                    from ..core.mocu_torchdiffeq import MOCU_torchdiffeq
+                    
+                    # Compute MOCU using torchdiffeq
+                    for l in range(self.it_idx):
+                        it_temp_val[l] = MOCU_torchdiffeq(
+                            self.K_max, w_init, N, self.deltaT,
+                            self.MReal, self.TReal,
+                            a_lower_current, a_upper_current, 
+                            seed=0, device=device
+                        )
+                    MOCUCurve[iteration + 1] = np.mean(it_temp_val)
+                    
+                    # Update last valid MOCU for future fallbacks
+                    self._last_valid_mocu = MOCUCurve[iteration + 1]
+                    
+                    # Debug: Print first successful computation
+                    if iteration == 0 and not hasattr(self, '_torchdiffeq_success_printed'):
+                        print(f"[{method_name}] torchdiffeq iterative MOCU computed: {MOCUCurve[iteration + 1]:.6f} (device: {device})")
+                        self._torchdiffeq_success_printed = True
+                        
+                except ImportError:
+                    # torchdiffeq not available
+                    if not hasattr(self, '_torchdiffeq_import_warned'):
+                        print(f"[{method_name}] Warning: torchdiffeq not available (ImportError)")
+                        print(f"[{method_name}] Install with: pip install torchdiffeq")
+                        print(f"[{method_name}] Using fallback MOCU computation")
+                        self._torchdiffeq_import_warned = True
+                    # Use last valid MOCU or previous value
+                    if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
+                        MOCUCurve[iteration + 1] = self._last_valid_mocu
+                    else:
+                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                        
+                except Exception as e:
+                    # torchdiffeq computation failed
+                    if not hasattr(self, '_torchdiffeq_iter_warned'):
+                        print(f"[{method_name}] ERROR: torchdiffeq failed for iterative MOCU (iteration {iteration+1}): {type(e).__name__}: {e}")
+                        print(f"[{method_name}] Using fallback MOCU computation")
+                        self._torchdiffeq_iter_warned = True
+                    # Use last valid MOCU or previous value
                     if hasattr(self, '_last_valid_mocu') and self._last_valid_mocu is not None:
                         MOCUCurve[iteration + 1] = self._last_valid_mocu
                     else:

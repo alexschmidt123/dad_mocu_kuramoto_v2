@@ -12,8 +12,8 @@ Available methods:
 - RANDOM: Random baseline
 - DAD_MOCU: Deep Adaptive Design with MOCU objective
 
-CRITICAL: Methods are lazy-imported to avoid PyTorch CUDA initialization
-before PyCUDA can be used. Import methods directly from their modules:
+NOTE: Methods are lazy-imported to avoid unnecessary PyTorch CUDA initialization.
+Import methods directly from their modules:
     from src.methods.random import RANDOM_Method
     from src.methods.inn import iNN_Method
 """
@@ -21,7 +21,6 @@ before PyCUDA can be used. Import methods directly from their modules:
 from .base import OEDMethod
 # NOTE: DO NOT import methods here - they trigger PyTorch import!
 # Import methods lazily from their modules when needed.
-# This allows PyCUDA to work before PyTorch CUDA is initialized.
 
 __all__ = [
     'OEDMethod',

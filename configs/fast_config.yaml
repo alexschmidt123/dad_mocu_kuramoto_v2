@@ -33,8 +33,8 @@ training:
 experiment:
   num_simulations: 1       # Single run only
   update_count: 3          # Just 3 iterations
-  it_idx: 3                # Minimal iterations
-  K_max: 1024              # Match dataset K_max
+  it_idx: 1                # Reduced: 1 iteration for faster evaluation (torchdiffeq is slow)
+  K_max: 256               # Reduced: 256 samples for faster evaluation (~10min vs ~2h with 1024)
   methods:
     - "RANDOM"             # Random baseline (run PyCUDA methods first)
     - "iNN"                # Iterative MPNN (best method)

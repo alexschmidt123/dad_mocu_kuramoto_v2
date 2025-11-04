@@ -32,6 +32,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+# Use torchdiffeq for experiment simulation (replaced CPU-based mocu_comp)
+try:
+    from src.core.mocu_torchdiffeq import solve_kuramoto_ode, check_synchronization
+    TORCHDIFFEQ_AVAILABLE = True
+except ImportError:
+    TORCHDIFFEQ_AVAILABLE = False
+    print("[WARNING] torchdiffeq not available. Will use CPU-based sync detection.")
+
 
 def generate_random_system(N):
     """Generate a random oscillator system."""
@@ -75,9 +83,11 @@ def generate_random_system(N):
     return w, a_lower_bound, a_upper_bound, a_true, init_sync
 
 
-def perform_experiment(a_true, i, j, w, h, M):
+def perform_experiment(a_true, i, j, w, h, M, device='cuda'):
     """
     Perform experiment on pair (i, j) and observe if synchronized.
+    
+    Uses torchdiffeq to solve ODE and check synchronization.
     
     Returns:
         observation: 1 if synchronized, 0 if not
@@ -91,8 +101,20 @@ def perform_experiment(a_true, i, j, w, h, M):
     w_pair = np.array([w_i, w_j])
     a_pair = np.array([[0, a_ij], [a_ij, 0]])
     
-    sync_result = mocu_comp(w_pair, h, 2, M, a_pair)
+    # Use torchdiffeq if available, otherwise fall back to CPU-based sync detection
+    if TORCHDIFFEQ_AVAILABLE and torch.cuda.is_available():
+        try:
+            theta_traj = solve_kuramoto_ode(w_pair, a_pair, h, M, device=device)
+            sync_result = check_synchronization(theta_traj, M)
+            return sync_result
+        except Exception as e:
+            # Fall back to CPU-based sync detection if torchdiffeq fails
+            if not hasattr(perform_experiment, '_torchdiffeq_warned'):
+                print(f"[generate_dad_data] Warning: torchdiffeq failed, using CPU sync detection: {e}")
+                perform_experiment._torchdiffeq_warned = True
     
+    # Fallback: CPU-based sync detection
+    sync_result = mocu_comp(w_pair, h, 2, M, a_pair)
     return sync_result
 
 
@@ -144,6 +166,9 @@ def generate_trajectory(N, K, verbose=False, mpnn_predictor=None, mocu_mean=None
     T = 5.0
     M = int(T / h)
     
+    # Determine device for torchdiffeq
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
     # Initialize trajectory
     # NOTE: 'a_true' is REQUIRED for REINFORCE - needed to simulate experiments during policy rollouts.
     trajectory = {
@@ -165,8 +190,8 @@ def generate_trajectory(N, K, verbose=False, mpnn_predictor=None, mocu_mean=None
         available_pairs = [(i, j) for i in range(N) for j in range(i+1, N) if (i, j) not in observed_pairs]
         i_selected, j_selected = random.choice(available_pairs)
         
-        # Perform experiment
-        observation = perform_experiment(a_true, i_selected, j_selected, w, h, M)
+        # Perform experiment (use torchdiffeq if available)
+        observation = perform_experiment(a_true, i_selected, j_selected, w, h, M, device=device)
         
         # Update bounds
         a_lower, a_upper = update_bounds(a_lower, a_upper, i_selected, j_selected, observation, w)
