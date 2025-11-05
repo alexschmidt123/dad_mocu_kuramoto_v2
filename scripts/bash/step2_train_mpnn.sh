@@ -33,7 +33,7 @@ if [ -z "$TRAIN_FILE" ] || [ ! -f "$TRAIN_FILE" ]; then
     exit 1
 fi
 
-echo "Training MPNN predictor (Step 2/5)..."
+echo "Training MPNN predictor (Step 2/6)..."
 echo "  Epochs=$EPOCHS, Output: $MODEL_RUN_FOLDER"
 
 cd "${PROJECT_ROOT}/scripts"

@@ -52,7 +52,13 @@ class NN_Method(OEDMethod):
         self.mean = None
         self.std = None
         self.R_matrix = np.zeros((N, N))
-        self.device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
+        # Force CPU when PyCUDA is used (steps 1-3) to avoid CUDA context conflicts
+        import os
+        use_pycuda = os.getenv('USE_PYCUDA_FOR_BASELINES', '0') == '1'
+        if use_pycuda:
+            self.device = torch.device('cpu')  # Use CPU when PyCUDA is active
+        else:
+            self.device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
         
         # Load model once
         self._load_model_and_stats()
@@ -155,7 +161,7 @@ class NN_Method(OEDMethod):
                 )
                 P_syn_list.append(P_syn)
                 
-                edge_attr_syn = get_edge_attr_from_bounds(a_lower_syn, a_upper_syn, self.N).t().to(self.device)
+                edge_attr_syn = get_edge_attr_from_bounds(a_lower_syn, a_upper_syn, self.N).to(self.device)
                 data_syn = Data(x=x, edge_index=edge_index, edge_attr=edge_attr_syn, y=dummy_y)
                 data_list.append(data_syn)
                 
@@ -166,7 +172,7 @@ class NN_Method(OEDMethod):
                 a_upper_nonsyn[i, j] = a_tilde
                 a_upper_nonsyn[j, i] = a_tilde
                 
-                edge_attr_nonsyn = get_edge_attr_from_bounds(a_lower_nonsyn, a_upper_nonsyn, self.N).t().to(self.device)
+                edge_attr_nonsyn = get_edge_attr_from_bounds(a_lower_nonsyn, a_upper_nonsyn, self.N).to(self.device)
                 data_nonsyn = Data(x=x, edge_index=edge_index, edge_attr=edge_attr_nonsyn, y=dummy_y)
                 data_list.append(data_nonsyn)
         

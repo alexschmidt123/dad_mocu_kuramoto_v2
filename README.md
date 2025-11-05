@@ -124,9 +124,10 @@ dad_mocu_kuramoto_v2/
 ├── scripts/bash/               # Shell scripts (workflow orchestration)
 │   ├── step1_generate_mocu_data.sh
 │   ├── step2_train_mpnn.sh
-│   ├── step3_train_dad.sh
-│   ├── step4_evaluate.sh
-│   └── step5_visualize.sh
+│   ├── step3_evaluate_baselines.sh
+│   ├── step4_train_dad.sh
+│   ├── step5_evaluate_dad.sh
+│   └── step6_visualize.sh
 │
 ├── src/
 │   ├── methods/                    # OED selection methods

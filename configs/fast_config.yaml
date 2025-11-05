@@ -9,10 +9,10 @@
 N: 5
 N_global: 6  # N + 1 for CUDA kernel
 
-# Dataset generation (MINIMAL for quick verification)
+# Dataset generation (MINIMAL for quick verification - matches original fast_config)
 dataset:
   samples_per_type: 150    # Generate 300 total (expect ~150 valid after sync filtering)
-  train_size: 100          # 100 train samples
+  train_size: 100          # 100 train samples (matches original fast_config)
   K_max: 1024              # Minimal: 1024 Monte Carlo samples (vs 20480 full)
   save_json: false
   
@@ -33,12 +33,10 @@ training:
 experiment:
   num_simulations: 1       # Single run only
   update_count: 3          # Just 3 iterations
-  it_idx: 1                # Reduced: 1 iteration for faster evaluation (torchdiffeq is slow)
-  K_max: 256               # Reduced: 256 samples for faster evaluation (~10min vs ~2h with 1024)
+  it_idx: 3                # Minimal iterations (matches original fast_config)
+  K_max: 1024              # Match dataset K_max (matches original fast_config)
   methods:
-    - "RANDOM"             # Random baseline (run PyCUDA methods first)
-    - "iNN"                # Iterative MPNN (best method)
-    - "DAD"                # Deep Adaptive Design
+    - "DAD"                # Deep Adaptive Design (baselines run separately in step 4)
   
   # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
   # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)

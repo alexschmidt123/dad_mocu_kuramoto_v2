@@ -1,9 +1,11 @@
 """
-Enhanced Evaluation Script with Smart Method Ordering
+Evaluation Script for Baseline Methods (Steps 1-3 - Original Paper Workflow)
 
-This script evaluates OED methods. All methods now use torchdiffeq (replaced PyCUDA)
-for MOCU computation, eliminating CUDA context conflicts. PyCUDA is only used for
-initial MPNN training data generation (in separate process).
+This script evaluates baseline OED methods (iNN, NN, ODE, ENTROPY, RANDOM) using PyCUDA
+for MOCU computation, matching the original paper 2023 implementation exactly.
+
+Steps 1-3 use PyCUDA (original paper workflow)
+Steps 4-5 use torchdiffeq (DAD-specific, runs in separate process)
 
 Usage:
     python scripts/evaluate.py
@@ -17,6 +19,11 @@ import argparse
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+import warnings
+
+# Suppress verbose warnings
+warnings.filterwarnings('ignore', category=UserWarning, message='.*DataLoader.*deprecated.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch_geometric')
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -50,11 +57,6 @@ if __name__ == '__main__':
     result_folder = os.getenv('RESULT_FOLDER', str(PROJECT_ROOT / 'results' / 'default'))
     os.makedirs(result_folder, exist_ok=True)
     
-    print(f"Evaluation Configuration:")
-    print(f"  N={N}, update_cnt={update_cnt}, it_idx={it_idx}, K_max={K_max}")
-    print(f"  num_simulations={numberOfSimulationsPerMethod}")
-    print(f"  result_folder={result_folder}")
-    
     # Time parameters
     deltaT = 1.0 / 160.0
     TVirtual = 5
@@ -66,30 +68,51 @@ if __name__ == '__main__':
     w = np.array([-2.5000, -0.6667, 1.1667, 2.0000, 5.8333])
     
     # ========== Method Selection ==========
-    # All methods now use torchdiffeq (replaced PyCUDA), so no special ordering needed
+    # Steps 1-3: Use PyCUDA for baseline methods (original paper workflow)
+    # Steps 4-5: Use torchdiffeq for DAD (runs in separate process via dad_eval.py)
     
     if args.methods:
         method_names = [m.strip() for m in args.methods.split(',')]
     else:
         method_names = ['iNN', 'NN', 'ODE', 'ENTROPY', 'RANDOM']
     
-    # Note: --force-pytorch flag is deprecated (all methods use PyTorch/torchdiffeq now)
+    # Print configuration (after method_names is defined)
+    print(f"\n{'='*80}")
+    print(f"Evaluation Configuration (matches original paper 2023)")
+    print(f"{'='*80}")
+    print(f"  N={N}, update_cnt={update_cnt}, it_idx={it_idx}, K_max={K_max}")
+    print(f"  num_simulations={numberOfSimulationsPerMethod}")
+    print(f"  methods={method_names}")
+    print(f"  result_folder={result_folder}")
+    print(f"{'='*80}\n")
+    
+    # Note: --force-pytorch flag is deprecated (baselines use PyCUDA, DAD uses torchdiffeq)
     if args.force_pytorch:
-        print(f"\n🔧 Note: All methods now use torchdiffeq (PyTorch-based)")
+        print(f"\n🔧 Note: Baseline methods use PyCUDA (original paper)")
         print(f"   (--force-pytorch flag is deprecated but kept for compatibility)")
     
-    print(f"\n📋 Method execution order: {method_names}")
-    
     # ========== Choose MOCU backend for initial computation ==========
-    # Use torchdiffeq for initial MOCU (replaced PyCUDA for compatibility)
-    # torchdiffeq is fully compatible with PyTorch CUDA - no context conflicts
-    import torch
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    from src.core.mocu_torchdiffeq import MOCU_torchdiffeq as MOCU_initial
-    mocu_backend = f"torchdiffeq (device: {device})"
+    # Use PyCUDA for steps 1-3 (original paper workflow) - matches original paper exactly
+    # PyCUDA runs in separate process via bash scripts, so no conflicts with PyTorch
+    device = None  # Only set if using torchdiffeq
+    try:
+        from src.core.mocu_pycuda import MOCU_pycuda as MOCU_initial
+        use_pycuda = True
+    except (ImportError, RuntimeError) as e:
+        print(f"⚠️  Warning: PyCUDA not available: {e}")
+        print(f"   Falling back to torchdiffeq...")
+        import torch
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        from src.core.mocu_torchdiffeq import MOCU_torchdiffeq as MOCU_initial
+        use_pycuda = False
     
-    print(f"   Initial MOCU computation: {mocu_backend}")
-    print()
+    # Set environment variable so methods know to use PyCUDA
+    if use_pycuda:
+        os.environ['USE_PYCUDA_FOR_BASELINES'] = '1'
+    else:
+        # Ensure env var is not set if using torchdiffeq
+        if 'USE_PYCUDA_FOR_BASELINES' in os.environ:
+            del os.environ['USE_PYCUDA_FOR_BASELINES']
     
     numberOfVaildSimulations = 0
     numberOfSimulations = 0
@@ -125,7 +148,7 @@ if __name__ == '__main__':
     save_MOCU_matrix = np.zeros([update_cnt + 1, len(method_names), numberOfSimulationsPerMethod])
     
     # ========== Main simulation loop ==========
-    sim_pbar = tqdm(total=numberOfSimulationsPerMethod, desc="Simulations", unit="sim", ncols=100)
+    sim_pbar = tqdm(total=numberOfSimulationsPerMethod, desc="Simulations", unit="sim", ncols=100, mininterval=1.0)
     
     while numberOfVaildSimulations < numberOfSimulationsPerMethod:
         sim_pbar.set_description(f"Simulation {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}")
@@ -142,12 +165,17 @@ if __name__ == '__main__':
         numberOfSimulations += 1
         
         # Check if system is already synchronized
+        # "Unstable" = not fully synchronized - this is the interesting case where OED can help
+        #   The system has some oscillators that are not synchronized, so we can learn about
+        #   coupling parameters through experiments. This is what we want to evaluate.
+        # "Stable" = already synchronized - skip this simulation (no learning needed)
+        #   All oscillators are synchronized from the start, so no experiments can help.
         init_sync_check = determineSyncN(w, deltaT, N, MReal, a)
         if init_sync_check == 1:
-            print('             The system has been already stable. Skipping...')
+            sim_pbar.write(f'  ⚠️  System {numberOfSimulations}: Already synchronized (skipping - no learning needed)')
             continue
         else:
-            print('             Unstable system has been found ✓')
+            sim_pbar.write(f'  ✓ System {numberOfSimulations}: Not synchronized (good for OED evaluation)')
         
         # Determine synchronization status and critical couplings
         isSynchronized = np.zeros((N, N))
@@ -172,33 +200,50 @@ if __name__ == '__main__':
         timeMOCU = time.time()
         it_temp_val = np.zeros(it_idx)
         
-        # NOTE: torchdiffeq processes samples sequentially (unlike PyCUDA's parallel kernels)
-        # For K_max=1024, this can take ~30-40 minutes per MOCU computation
-        # Consider reducing K_max for faster evaluation (e.g., K_max=256 for ~10min)
-        print(f"  Computing initial MOCU: {it_idx} iterations × K_max={K_max} samples")
-        print(f"  Note: torchdiffeq is slower than PyCUDA (sequential processing)")
-        print(f"  Expected time: ~{K_max // 30} minutes per iteration")
-        
-        with tqdm(total=it_idx, desc=f"  Initial MOCU ({mocu_backend})", leave=False, unit="iter", ncols=100) as pbar:
+        # Initial MOCU computation (matches original paper)
+        with tqdm(total=it_idx, desc="  Initial MOCU", leave=False, unit="iter", ncols=80, mininterval=0.5) as pbar:
             for l in range(it_idx):
-                it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal, 
-                                              aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
+                if use_pycuda:
+                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                  aInitialLower.copy(), aInitialUpper.copy(), 0)
+                else:
+                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                  aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
                 pbar.update(1)
         
         MOCUInitial = np.mean(it_temp_val)
         elapsed = time.time() - timeMOCU
-        print(f"Initial MOCU: {MOCUInitial:.6f} (computed in {elapsed:.2f}s / {elapsed/60:.1f}min)")
+        sim_pbar.write(f'  Initial MOCU: {MOCUInitial:.6f} ({elapsed:.1f}s)')
         
         # ========== Evaluate each method ==========
-        method_pbar = tqdm(method_names, desc=f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}", 
-                          leave=False, unit="method", ncols=100)
+        method_pbar = tqdm(method_names, desc="  Methods", leave=False, unit="method", ncols=80, mininterval=1.0)
+        
+        # Monkey-patch print() to redirect to tqdm.write() during method execution
+        # This prevents method prints from interfering with progress bars
+        original_print = print
+        def redirect_print(*args, **kwargs):
+            """Redirect print to tqdm.write() to avoid interfering with progress bars."""
+            # Filter out verbose method initialization messages
+            msg = ' '.join(str(arg) for arg in args)
+            if any(marker in msg for marker in ['[iNN]', '[NN]', '[ODE]', '[iODE]', '[ENTROPY]', '[RANDOM]']):
+                # Only show important messages, suppress verbose ones
+                if any(important in msg for important in ['Warning:', 'Error:', 'ERROR']):
+                    method_pbar.write(f'  {msg}')
+                # Suppress: "Loaded MPNN...", "Computing expected MOCU...", "Initialized..."
+            else:
+                # Non-method prints go through normally
+                original_print(*args, **kwargs)
         
         for method_idx, method_name in enumerate(method_pbar):
-            method_pbar.set_description(f"  Round {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod} - {method_name}")
+            method_pbar.set_postfix({'method': method_name})
             
             method_start_time = time.time()
             
             try:
+                # Temporarily redirect print for method initialization and execution
+                import builtins
+                builtins.print = redirect_print
+                
                 # Lazy import methods
                 if method_name == 'iNN':
                     from src.methods.inn import iNN_Method
@@ -243,7 +288,7 @@ if __name__ == '__main__':
                     print(f"Unknown method: {method_name}")
                     continue
                 
-                # Run the method
+                # Run the method (with print redirection active)
                 MOCUCurve, experimentSequence, timeComplexity = method.run_episode(
                     w_init=w,
                     a_lower_init=aInitialLower.copy(),
@@ -253,6 +298,10 @@ if __name__ == '__main__':
                     update_cnt=update_cnt,
                     initial_mocu=MOCUInitial
                 )
+                
+                # Restore original print
+                import builtins
+                builtins.print = original_print
                 
                 total_time = time.time() - method_start_time
                 method_pbar.set_postfix({
@@ -276,7 +325,10 @@ if __name__ == '__main__':
                 save_MOCU_matrix[:, method_idx, numberOfVaildSimulations] = MOCUCurve
             
             except Exception as e:
-                print(f"✗ Error running {method_name}: {e}")
+                # Restore original print before error handling
+                import builtins
+                builtins.print = original_print
+                method_pbar.write(f'  ✗ Error running {method_name}: {e}')
                 import traceback
                 traceback.print_exc()
                 continue

@@ -54,12 +54,12 @@ echo "  Methods to evaluate: $METHODS"
 echo ""
 
 # Step 0: Verify configuration
-echo -e "${GREEN}[Step 0/5]${NC} Verifying configuration..."
+echo -e "${GREEN}[Step 0/6]${NC} Verifying configuration..."
 echo -e "${GREEN}✓${NC} Configuration loaded: N=$N_GLOBAL"
 
-# Step 1: Generate MPNN data (uses PyTorch CUDA acceleration)
+# Step 1: Generate MPNN data (uses PyCUDA - original paper workflow)
 echo ""
-echo -e "${GREEN}[Step 1/5]${NC} Generating MPNN training data..."
+echo -e "${GREEN}[Step 1/6]${NC} Generating MPNN training data..."
 
 # Check if data already exists in config folder
 DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/"
@@ -78,28 +78,39 @@ fi
 
 # Step 2: Train MPNN predictor (runs in separate process - uses PyTorch only)
 echo ""
-echo -e "${GREEN}[Step 2/5]${NC} Training MPNN predictor..."
+echo -e "${GREEN}[Step 2/6]${NC} Training MPNN predictor..."
 bash "${PROJECT_ROOT}/scripts/bash/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
 
-# Step 3: Train DAD policy (uses MPNN predictor for MOCU estimation)
+# Step 3: Evaluate ALL baseline methods first (uses PyCUDA for MOCU computation - original paper workflow)
+echo ""
+echo -e "${GREEN}[Step 3/6]${NC} Running baseline evaluation (ALL original methods: iNN, NN, ODE, ENTROPY, RANDOM)..."
+bash "${PROJECT_ROOT}/scripts/bash/step3_evaluate_baselines.sh" "$CONFIG_FILE"
+
+# Step 4: Generate DAD training data and train DAD policy (if DAD is in methods list)
+# This runs AFTER baselines so DAD can use the same initial MOCU
 if echo "$METHODS" | grep -q "DAD"; then
     echo ""
-    echo -e "${GREEN}[Step 3/5]${NC} Training DAD policy..."
-    bash "${PROJECT_ROOT}/scripts/bash/step3_train_dad.sh" "$CONFIG_FILE"
+    echo -e "${GREEN}[Step 4/6]${NC} Generating DAD training data and training DAD policy..."
+    bash "${PROJECT_ROOT}/scripts/bash/step4_train_dad.sh" "$CONFIG_FILE"
 else
     echo ""
-    echo -e "${BLUE}[Step 3/5]${NC} Skipping DAD training (not in methods list)"
+    echo -e "${BLUE}[Step 4/6]${NC} Skipping DAD (not in methods list)"
 fi
 
-# Step 4: Evaluate methods (uses PyTorch CUDA for MOCU computation)
-echo ""
-echo -e "${GREEN}[Step 4/5]${NC} Running evaluation..."
-bash "${PROJECT_ROOT}/scripts/bash/step4_evaluate.sh" "$CONFIG_FILE"
+# Step 5: Evaluate DAD method (uses same initial MOCU as baselines)
+if echo "$METHODS" | grep -q "DAD"; then
+    echo ""
+    echo -e "${GREEN}[Step 5/6]${NC} Running DAD evaluation (using baseline initial MOCU)..."
+    bash "${PROJECT_ROOT}/scripts/bash/step5_evaluate_dad.sh" "$CONFIG_FILE"
+else
+    echo ""
+    echo -e "${BLUE}[Step 5/6]${NC} Skipping DAD evaluation (not in methods list)"
+fi
 
-# Step 5: Generate visualizations (runs in separate process)
+# Step 6: Generate visualizations (runs in separate process)
 echo ""
-echo -e "${GREEN}[Step 5/5]${NC} Generating visualizations..."
-bash "${PROJECT_ROOT}/scripts/bash/step5_visualize.sh" "$CONFIG_FILE"
+echo -e "${GREEN}[Step 6/6]${NC} Generating visualizations..."
+bash "${PROJECT_ROOT}/scripts/bash/step6_visualize.sh" "$CONFIG_FILE"
 
 # Summary
 echo ""

@@ -13,20 +13,26 @@ import time
 import numpy as np
 from pathlib import Path
 import sys
+import os
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from src.methods.base import OEDMethod
 
-# Use torchdiffeq for ODE methods (replaced PyCUDA for compatibility)
+# Support both PyCUDA (steps 1-3, original paper) and torchdiffeq (fallback)
 try:
     import torch
     from src.core.mocu_torchdiffeq import MOCU_torchdiffeq
     TORCHDIFFEQ_AVAILABLE = True
 except (ImportError, RuntimeError):
     TORCHDIFFEQ_AVAILABLE = False
-    print("[WARNING] torchdiffeq not available for ODE methods. Install with: pip install torchdiffeq")
+
+try:
+    from src.core.mocu_pycuda import MOCU_pycuda
+    PYCUDA_AVAILABLE = True
+except (ImportError, RuntimeError):
+    PYCUDA_AVAILABLE = False
 
 
 class ODE_Method(OEDMethod):
@@ -58,13 +64,23 @@ class ODE_Method(OEDMethod):
         self.TVirtual = TVirtual if TVirtual is not None else TReal
         self.R_matrix = np.zeros((N, N))
         
-        # Determine device
-        self.device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
+        # Determine device and MOCU backend
+        use_pycuda = os.getenv('USE_PYCUDA_FOR_BASELINES', '0') == '1'
         
-        if not TORCHDIFFEQ_AVAILABLE:
-            raise RuntimeError("torchdiffeq is REQUIRED for ODE methods but not available. Install with: pip install torchdiffeq")
+        if use_pycuda and PYCUDA_AVAILABLE:
+            self.use_pycuda = True
+            self.device = None  # PyCUDA handles device internally
+            mocu_backend = "PyCUDA (original paper)"
+        elif TORCHDIFFEQ_AVAILABLE:
+            self.use_pycuda = False
+            self.device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
+            mocu_backend = f"torchdiffeq (device: {self.device})"
+        else:
+            raise RuntimeError("Neither PyCUDA nor torchdiffeq available for ODE methods. Install at least one.")
         
-        print(f"[ODE] Initialized (static version, using torchdiffeq, device: {self.device})")
+        if not hasattr(self, '_init_printed'):
+            print(f"[ODE] Initialized (static version, using {mocu_backend})")
+            self._init_printed = True
     
     def _compute_expected_mocu_matrix(self, w, a_lower_bounds, a_upper_bounds):
         """
@@ -98,14 +114,21 @@ class ODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for synchronized scenario (using torchdiffeq)
+                # Compute MOCU for synchronized scenario
                 mocu_vals_syn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_syn[l] = MOCU_torchdiffeq(
-                        self.K_max, w, self.N, self.deltaT, 
-                        self.MVirtual, self.TVirtual,
-                        a_lower_syn, a_upper_syn, seed=0, device=self.device
-                    )
+                    if self.use_pycuda:
+                        mocu_vals_syn[l] = MOCU_pycuda(
+                            self.K_max, w, self.N, self.deltaT, 
+                            self.MVirtual, self.TVirtual,
+                            a_lower_syn, a_upper_syn, seed=0
+                        )
+                    else:
+                        mocu_vals_syn[l] = MOCU_torchdiffeq(
+                            self.K_max, w, self.N, self.deltaT, 
+                            self.MVirtual, self.TVirtual,
+                            a_lower_syn, a_upper_syn, seed=0, device=self.device
+                        )
                 MOCU_syn = np.mean(mocu_vals_syn)
                 
                 # Scenario 2: Non-synchronized observation
@@ -119,14 +142,21 @@ class ODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for non-synchronized scenario (using torchdiffeq)
+                # Compute MOCU for non-synchronized scenario
                 mocu_vals_nonsyn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_nonsyn[l] = MOCU_torchdiffeq(
-                        self.K_max, w, self.N, self.deltaT,
-                        self.MVirtual, self.TVirtual,
-                        a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
-                    )
+                    if self.use_pycuda:
+                        mocu_vals_nonsyn[l] = MOCU_pycuda(
+                            self.K_max, w, self.N, self.deltaT,
+                            self.MVirtual, self.TVirtual,
+                            a_lower_nonsyn, a_upper_nonsyn, seed=0
+                        )
+                    else:
+                        mocu_vals_nonsyn[l] = MOCU_torchdiffeq(
+                            self.K_max, w, self.N, self.deltaT,
+                            self.MVirtual, self.TVirtual,
+                            a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
+                        )
                 MOCU_nonsyn = np.mean(mocu_vals_nonsyn)
                 
                 # Expected MOCU
@@ -232,14 +262,21 @@ class iODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for synchronized scenario (using torchdiffeq)
+                # Compute MOCU for synchronized scenario
                 mocu_vals_syn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_syn[l] = MOCU_torchdiffeq(
-                        self.K_max, w, self.N, self.deltaT,
-                        self.MVirtual, self.TVirtual,
-                        a_lower_syn, a_upper_syn, seed=0, device=self.device
-                    )
+                    if self.use_pycuda:
+                        mocu_vals_syn[l] = MOCU_pycuda(
+                            self.K_max, w, self.N, self.deltaT,
+                            self.MVirtual, self.TVirtual,
+                            a_lower_syn, a_upper_syn, seed=0
+                        )
+                    else:
+                        mocu_vals_syn[l] = MOCU_torchdiffeq(
+                            self.K_max, w, self.N, self.deltaT,
+                            self.MVirtual, self.TVirtual,
+                            a_lower_syn, a_upper_syn, seed=0, device=self.device
+                        )
                 MOCU_syn = np.mean(mocu_vals_syn)
                 
                 # Scenario 2: Non-synchronized observation
@@ -253,14 +290,21 @@ class iODE_Method(OEDMethod):
                     a_upper_bounds[i, j] - a_lower_bounds[i, j] + 1e-10
                 )
                 
-                # Compute MOCU for non-synchronized scenario (using torchdiffeq)
+                # Compute MOCU for non-synchronized scenario
                 mocu_vals_nonsyn = np.zeros(self.it_idx)
                 for l in range(self.it_idx):
-                    mocu_vals_nonsyn[l] = MOCU_torchdiffeq(
-                        self.K_max, w, self.N, self.deltaT,
-                        self.MVirtual, self.TVirtual,
-                        a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
-                    )
+                    if self.use_pycuda:
+                        mocu_vals_nonsyn[l] = MOCU_pycuda(
+                            self.K_max, w, self.N, self.deltaT,
+                            self.MVirtual, self.TVirtual,
+                            a_lower_nonsyn, a_upper_nonsyn, seed=0
+                        )
+                    else:
+                        mocu_vals_nonsyn[l] = MOCU_torchdiffeq(
+                            self.K_max, w, self.N, self.deltaT,
+                            self.MVirtual, self.TVirtual,
+                            a_lower_nonsyn, a_upper_nonsyn, seed=0, device=self.device
+                        )
                 MOCU_nonsyn = np.mean(mocu_vals_nonsyn)
                 
                 # Expected MOCU

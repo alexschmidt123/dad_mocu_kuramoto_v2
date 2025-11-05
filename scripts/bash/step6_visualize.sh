@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 5: Generate visualizations
+# Step 6: Generate visualizations
 # This script runs in isolation
 
 set -e
@@ -24,11 +24,11 @@ UPDATE_CNT=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "update_count:" | awk
 RESULT_RUN_FOLDER=$(ls -td ${PROJECT_ROOT}/results/${CONFIG_NAME}/*/ 2>/dev/null | head -1 || echo "")
 
 if [ -z "$RESULT_RUN_FOLDER" ]; then
-    echo "Error: No results folder found. Run step4_evaluate.sh first."
+    echo "Error: No results folder found. Run step3_evaluate_baselines.sh first."
     exit 1
 fi
 
-echo "Generating visualizations (Step 5/5)..."
+echo "Generating visualizations (Step 6/6)..."
 echo "  Results: $RESULT_RUN_FOLDER"
 
 cd "${PROJECT_ROOT}/scripts"

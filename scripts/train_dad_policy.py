@@ -255,9 +255,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             print(f"[WARNING] CUDA context reset encountered issue: {e}")
             print("[WARNING] Continuing anyway - may have CUDA issues")
     
-    # Use tqdm for progress bar
+    # Use tqdm for progress bar (update less frequently to reduce verbosity)
     epoch_desc = f"Epoch {epoch_num+1}" if epoch_num is not None else "Epoch"
-    traj_pbar = tqdm(enumerate(trajectories), total=len(trajectories), desc=epoch_desc, unit="traj", ncols=100, leave=False)
+    traj_pbar = tqdm(enumerate(trajectories), total=len(trajectories), desc=epoch_desc, unit="traj", ncols=100, leave=False, mininterval=1.0)
+    
+    # Update progress bar only every N trajectories to reduce verbosity
+    update_frequency = max(1, len(trajectories) // 20)  # Update ~20 times per epoch
     
     for traj_idx, traj in traj_pbar:
         # Periodically clear cache (less frequently to reduce overhead)
@@ -534,9 +537,11 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         
-        # Update progress bar with current loss
+        # Update progress bar only periodically to reduce verbosity
         current_loss = loss.item()
-        traj_pbar.set_postfix({'loss': f'{current_loss:.4f}', 'reward': f'{reward:.4f}'})
+        if (traj_idx + 1) % update_frequency == 0 or (traj_idx + 1) == len(trajectories):
+            # Only update postfix every N trajectories
+            traj_pbar.set_postfix({'loss': f'{current_loss:.4f}', 'reward': f'{reward:.4f}'})
         
         total_loss += current_loss
         total_reward += reward
@@ -612,7 +617,7 @@ def main():
     train_losses = []
     train_accs = []
     
-    epoch_pbar = tqdm(range(args.epochs), desc="Training", unit="epoch", ncols=100)
+    epoch_pbar = tqdm(range(args.epochs), desc="Training", unit="epoch", ncols=100, mininterval=1.0)
     
     for epoch in epoch_pbar:
         start_time = time.time()

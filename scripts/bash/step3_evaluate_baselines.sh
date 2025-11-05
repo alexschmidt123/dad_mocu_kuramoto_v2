@@ -1,6 +1,7 @@
 #!/bin/bash
-# Step 4: Evaluate methods (uses PyTorch CUDA for MOCU computation)
-# This script runs in isolation
+# Step 3: Evaluate ALL baseline methods first (iNN, NN, ODE, ENTROPY, RANDOM)
+# This runs all original paper baselines BEFORE DAD training, regardless of config
+# Uses PyCUDA for MOCU computation (matches original paper 2023 workflow)
 
 set -e
 
@@ -18,7 +19,6 @@ TIMESTAMP=$(date +"%m%d%Y_%H%M%S")
 
 # Get info from previous steps
 MOCU_MODEL_NAME=$(cat /tmp/mocu_model_name_${CONFIG_NAME}.txt 2>/dev/null || echo "")
-DAD_POLICY_PATH=$(cat /tmp/dad_policy_path_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 
 # Parse config parameters
 N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
@@ -34,8 +34,8 @@ NUM_SIMULATIONS=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "num_simulations
 [ -z "$K_MAX" ] && K_MAX=20480
 [ -z "$NUM_SIMULATIONS" ] && NUM_SIMULATIONS=10
 
-# Parse methods from config
-METHODS=$(grep -A 20 "^  methods:" $CONFIG_FILE | grep '    - "' | sed 's/.*"\(.*\)".*/\1/' | grep -v '^#' | tr '\n' ',' | sed 's/,$//')
+# Run ALL baseline methods (matching original paper)
+BASELINE_METHODS="iNN,NN,ODE,ENTROPY,RANDOM"
 
 RESULT_RUN_FOLDER="${PROJECT_ROOT}/results/${CONFIG_NAME}/${TIMESTAMP}/"
 mkdir -p "$RESULT_RUN_FOLDER"
@@ -47,18 +47,15 @@ export EVAL_UPDATE_CNT="$UPDATE_CNT"
 export EVAL_IT_IDX="$IT_IDX"
 export EVAL_K_MAX="$K_MAX"
 export EVAL_NUM_SIMULATIONS="$NUM_SIMULATIONS"
-if [ -n "$DAD_POLICY_PATH" ]; then
-    export DAD_POLICY_PATH="$DAD_POLICY_PATH"
-fi
 
-echo "Running evaluation (Step 4/5)..."
-echo "  Methods: $METHODS"
+echo "Running baseline evaluation (Step 3/6)..."
+echo "  Methods: $BASELINE_METHODS (ALL original paper baselines)"
 echo "  N=$N, update_cnt=$UPDATE_CNT, it_idx=$IT_IDX, K_max=$K_MAX, num_simulations=$NUM_SIMULATIONS"
 echo "  Results: $RESULT_RUN_FOLDER"
 
 cd "${PROJECT_ROOT}/scripts"
-# Python scripts remain in scripts/ directory
-python3 evaluate.py --methods "$METHODS"
+python3 evaluate.py --methods "$BASELINE_METHODS"
 
-echo "✓ Evaluation complete: $RESULT_RUN_FOLDER"
+echo "✓ Baseline evaluation complete: $RESULT_RUN_FOLDER"
+echo "$RESULT_RUN_FOLDER" > /tmp/baseline_results_folder_${CONFIG_NAME}.txt
 

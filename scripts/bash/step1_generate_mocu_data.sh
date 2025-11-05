@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 1: Generate MPNN training data (uses PyTorch CUDA acceleration)
+# Step 1: Generate MPNN training data (uses PyCUDA - original paper workflow)
 
 set -e
 
@@ -28,7 +28,7 @@ CHUNK_SIZE=$(grep -A 3 "^data_generation:" $CONFIG_FILE | grep "  chunk_size:" |
 DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/"
 mkdir -p "$DATA_FOLDER"
 
-echo "Generating MPNN training data (Step 1/5)..."
+echo "Generating MPNN training data (Step 1/6)..."
 echo "  N=$N, Samples per type=$SAMPLES, Train size=$TRAIN_SIZE, K_max=$K_MAX"
 
 cd "${PROJECT_ROOT}/scripts"

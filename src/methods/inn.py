@@ -51,7 +51,13 @@ class iNN_Method(OEDMethod):
         self.model = None
         self.mean = None
         self.std = None
-        self.device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
+        # Force CPU when PyCUDA is used (steps 1-3) to avoid CUDA context conflicts
+        import os
+        use_pycuda = os.getenv('USE_PYCUDA_FOR_BASELINES', '0') == '1'
+        if use_pycuda:
+            self.device = torch.device('cpu')  # Use CPU when PyCUDA is active
+        else:
+            self.device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
 
         # Load model and statistics once
         self._load_model_and_stats()

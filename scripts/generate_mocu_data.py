@@ -417,35 +417,56 @@ def main():
     
     total_samples = len(pyg_data_list)
     
-    # Match original paper implementation:
-    # Training script (train_predictor.py) expects a single file and splits at 96/4
-    # So we output a single combined file, not separate train/test files
-    # The training script will handle the 96/4 split internally
+    # Match original paper implementation: Split into train/test and save separately
+    # Smart split that handles both small and large datasets (matching original code)
+    if total_samples >= 2000:
+        # Large dataset: use original logic (reserve at least 1000 for test)
+        train_size = min(args.train_size, total_samples - 1000)
+        test_size = total_samples - train_size
+    else:
+        # Small dataset: use percentage-based split
+        min_test_samples = max(int(total_samples * 0.2), 10)  # At least 20% or 10 samples
+        
+        if total_samples < min_test_samples:
+            print(f"\n⚠️  Warning: Only {total_samples} samples generated!")
+            print(f"   This is too small for proper train/test split.")
+            print(f"   Consider increasing samples_per_type in config.")
+            train_size = total_samples
+            test_size = 0
+        else:
+            max_train = total_samples - min_test_samples
+            train_size = min(args.train_size, max_train)
+            test_size = total_samples - train_size
     
-    # Save single combined file (training script will split it)
-    # Use naming convention: {total_samples}_{N}o_train.pth (matches original pattern)
-    output_file = output_dir / f'{total_samples}_{N}o_train.pth'
+    train_data = pyg_data_list[:train_size]
+    test_data = pyg_data_list[train_size:] if test_size > 0 else []
     
-    # Save PyTorch Geometric data
-    torch.save(pyg_data_list, output_file)
+    # Save PyTorch files separately (matching original paper naming convention)
+    train_file = output_dir / f'{train_size}_{N}o_train.pth'
+    torch.save(train_data, train_file)
     
     print("\n" + "=" * 80)
     print("Dataset Generation Complete!")
     print("=" * 80)
-    print(f"Combined dataset: {output_file} ({total_samples} samples)")
-    print(f"\nNote: Training script will automatically split this at 96%%/4%% (train/test)")
-    print(f"      Expected train: {int(0.96 * total_samples)} samples")
-    print(f"      Expected test:  {int(0.04 * total_samples)} samples")
+    print(f"Training set: {train_file} ({train_size} samples)")
+    
+    if test_size > 0:
+        test_file = output_dir / f'{test_size}_{N}o_test.pth'
+        torch.save(test_data, test_file)
+        print(f"Test set:     {test_file} ({test_size} samples)")
+    else:
+        print(f"Test set:     None (dataset too small)")
+    
     print("=" * 80)
     
-    # Print statistics for the full dataset
-    if total_samples > 0:
-        all_mocu = [d.y.item() for d in pyg_data_list]
-        print(f"\nMOCU Statistics (Full Dataset):")
-        print(f"  Mean: {np.mean(all_mocu):.6f}")
-        print(f"  Std:  {np.std(all_mocu):.6f}")
-        print(f"  Min:  {np.min(all_mocu):.6f}")
-        print(f"  Max:  {np.max(all_mocu):.6f}")
+    # Print statistics for training set (matching original code)
+    if train_size > 0:
+        train_mocu = [d.y.item() for d in train_data]
+        print(f"\nMOCU Statistics (Training Set):")
+        print(f"  Mean: {np.mean(train_mocu):.6f}")
+        print(f"  Std:  {np.std(train_mocu):.6f}")
+        print(f"  Min:  {np.min(train_mocu):.6f}")
+        print(f"  Max:  {np.max(train_mocu):.6f}")
 
 
 if __name__ == '__main__':

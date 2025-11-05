@@ -1,5 +1,6 @@
 #!/bin/bash
-# Step 3: Train DAD policy (uses MPNN predictor for MOCU estimation)
+# Step 4: Generate DAD training data and train DAD policy (uses MPNN predictor for MOCU estimation)
+# This runs AFTER baseline evaluation so DAD can use the same initial MOCU
 
 set -e
 
@@ -85,7 +86,7 @@ if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
     eval $CMD
 fi
 
-echo "Training DAD policy (Step 3/5)..."
+echo "Generating DAD training data and training DAD policy (Step 4/6)..."
 echo "  Method: $DAD_METHOD"
 echo "  Using MPNN predictor: $MOCU_MODEL_NAME"
 
@@ -108,6 +109,12 @@ python3 train_dad_policy.py \
     --output-dir "$MODEL_RUN_FOLDER" \
     $USE_PREDICTED_MOCU
 
+# Copy DAD data to models folder for organization (together with MPNN and DAD policy)
+DAD_DATA_DEST="${MODEL_RUN_FOLDER}dad_data/"
+mkdir -p "$DAD_DATA_DEST"
+cp "$ABS_DAD_TRAJ_FILE" "$DAD_DATA_DEST" 2>/dev/null || true
+
 echo "✓ DAD policy trained: ${MODEL_RUN_FOLDER}dad_policy_N${N}.pth"
+echo "✓ DAD data copied to: ${DAD_DATA_DEST}"
 echo "${MODEL_RUN_FOLDER}dad_policy_N${N}.pth" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
 
