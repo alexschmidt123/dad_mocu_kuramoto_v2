@@ -404,42 +404,49 @@ class OEDMethod(ABC):
                         self._mpnn_mocu_warned = True
                     MOCUCurve[iteration + 1] = MOCUCurve[iteration]
             elif is_dad_method:
-                # For DAD method: Use MPNN predictor (DAD is not in original paper baselines)
-                # DAD uses policy network for selection, MPNN predictor for MOCU tracking
+                # For DAD method: Use torchdiffeq for MOCU tracking (matching baselines pattern)
+                # DAD uses policy network for selection, torchdiffeq for MOCU tracking (real MOCU)
+                # This matches the pattern: iNN/NN use PyCUDA for tracking, DAD uses torchdiffeq
                 try:
-                    # Try to load MPNN predictor if not already loaded
-                    if not hasattr(self, '_mocu_predictor_loaded'):
-                        # Lazy load predictor only when needed
-                        model_name = os.getenv('MOCU_MODEL_NAME', f'cons{self.N}')
-                        try:
-                            from ..models.predictors.predictor_utils import load_mpnn_predictor, predict_mocu
-                            if not hasattr(self, '_mocu_predictor_warned'):
-                                print(f"[DAD] Loading MPNN predictor for MOCU computation: {model_name}")
-                            self._mocu_model, self._mocu_mean, self._mocu_std = load_mpnn_predictor(model_name, device='cuda' if torch.cuda.is_available() else 'cpu')
-                            self._mocu_predictor_loaded = True
-                            self._predict_mocu_fn = predict_mocu
-                            if not hasattr(self, '_mocu_predictor_warned'):
-                                print(f"[DAD] MPNN predictor loaded successfully")
-                                self._mocu_predictor_warned = True
-                        except Exception as e:
-                            if not hasattr(self, '_mocu_predictor_warned'):
-                                print(f"[DAD] Warning: MPNN predictor not available: {e}")
-                                self._mocu_predictor_warned = True
-                            self._mocu_predictor_loaded = False
+                    # Use torchdiffeq for real MOCU computation (not MPNN predictor)
+                    # DAD should use real MOCU for fair comparison with baselines
+                    use_pycuda = os.getenv('USE_PYCUDA_FOR_BASELINES', '0') == '1'
                     
-                    # Compute MOCU using MPNN predictor
-                    if hasattr(self, '_mocu_predictor_loaded') and self._mocu_predictor_loaded:
-                        mocu_pred = self._predict_mocu_fn(
-                            self._mocu_model, self._mocu_mean, self._mocu_std,
-                            w_init, a_lower_current, a_upper_current,
-                            device='cuda' if torch.cuda.is_available() else 'cpu'
-                        )
-                        MOCUCurve[iteration + 1] = mocu_pred
-                        # Apply monotonicity constraint
+                    if not use_pycuda:  # DAD uses torchdiffeq (not PyCUDA)
+                        from ..core.mocu_torchdiffeq import MOCU_torchdiffeq
+                        device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
+                        it_temp_val = np.zeros(self.it_idx)
+                        for l in range(self.it_idx):
+                            it_temp_val[l] = MOCU_torchdiffeq(
+                                self.K_max, w_init, self.N, self.deltaT,
+                                self.MReal, self.TReal,  # Use MReal/TReal for actual MOCU (matching original)
+                                a_lower_current, a_upper_current, 0, device=device
+                            )
+                        MOCUCurve[iteration + 1] = np.mean(it_temp_val)
+                        # Apply monotonicity constraint (matching original)
                         if MOCUCurve[iteration + 1] > MOCUCurve[iteration]:
                             MOCUCurve[iteration + 1] = MOCUCurve[iteration]
                     else:
-                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                        # Fallback: Use PyCUDA if available (for consistency with baselines)
+                        try:
+                            from ..core.mocu_pycuda import MOCU_pycuda
+                            it_temp_val = np.zeros(self.it_idx)
+                            for l in range(self.it_idx):
+                                it_temp_val[l] = MOCU_pycuda(
+                                    self.K_max, w_init, self.N, self.deltaT,
+                                    self.MReal, self.TReal,
+                                    a_lower_current, a_upper_current, 0
+                                )
+                            MOCUCurve[iteration + 1] = np.mean(it_temp_val)
+                            # Apply monotonicity constraint
+                            if MOCUCurve[iteration + 1] > MOCUCurve[iteration]:
+                                MOCUCurve[iteration + 1] = MOCUCurve[iteration]
+                        except Exception as e:
+                            # PyCUDA failed, fall back to keeping previous value
+                            if not hasattr(self, '_dad_pycuda_warned'):
+                                print(f"[DAD] Warning: PyCUDA failed, using previous MOCU: {e}")
+                                self._dad_pycuda_warned = True
+                            MOCUCurve[iteration + 1] = MOCUCurve[iteration]
                 except Exception as e:
                     if not hasattr(self, '_dad_exception_warned'):
                         print(f"[DAD] Exception during MOCU computation: {e}")

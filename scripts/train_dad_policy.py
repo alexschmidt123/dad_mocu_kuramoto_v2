@@ -220,7 +220,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     """
     Train using REINFORCE policy gradient with MOCU DIRECTLY as the loss.
     """
-    from scripts.generate_dad_data import perform_experiment, update_bounds
+    from scripts.generate_dad_data import update_bounds
     
     if use_predicted_mocu and mocu_model is not None:
         from src.models.predictors.predictor_utils import predict_mocu
@@ -263,9 +263,22 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     update_frequency = max(1, len(trajectories) // 20)  # Update ~20 times per epoch
     
     for traj_idx, traj in traj_pbar:
-        # Periodically clear cache (less frequently to reduce overhead)
+        # Periodically clear cache and add error recovery
         if traj_idx > 0 and traj_idx % 50 == 0 and torch.cuda.is_available():
             torch.cuda.empty_cache()
+            # Add periodic CUDA error check to catch issues early
+            try:
+                # Quick CUDA health check (non-blocking)
+                _ = torch.cuda.current_device()
+            except Exception as e:
+                print(f"[REINFORCE] WARNING: CUDA health check failed at trajectory {traj_idx}: {e}")
+                print("[REINFORCE] Attempting CUDA context recovery...")
+                try:
+                    torch.cuda.empty_cache()
+                    # REMOVED: torch.cuda.synchronize() - can cause hangs if CUDA is corrupted
+                    # Just clear cache, don't synchronize
+                except:
+                    print("[REINFORCE] CUDA recovery failed - continuing anyway")
             
         optimizer.zero_grad()
         
@@ -314,8 +327,14 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             
             action_i, action_j = model.idx_to_pair(action_idx.item())
             
-            # === EXPERIMENT SIMULATION (CPU) ===
-            observation = perform_experiment(a_true, action_i, action_j, w, h, M)
+            # === EXPERIMENT SIMULATION ===
+            # Use CPU-based sync detection (no torchdiffeq during training to avoid CUDA issues)
+            # This is fast enough for 2-oscillator systems and avoids CUDA context conflicts
+            from src.core.sync_detection import determineSyncTwo
+            w_i = w[action_i]
+            w_j = w[action_j]
+            a_ij = a_true[action_i, action_j]
+            observation = determineSyncTwo(w_i, w_j, h, 2, M, a_ij)
             a_lower, a_upper = update_bounds(a_lower, a_upper, action_i, action_j, observation, w)
             
             observed_pairs.append((action_i, action_j))
@@ -341,10 +360,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             if torch.cuda.is_available() and CUDA_LAUNCH_BLOCKING == '1':
                 torch.cuda.synchronize()
         else:
-            # LAST RESORT: Direct MOCU computation using torchdiffeq
-            from src.core.mocu_torchdiffeq import MOCU_torchdiffeq
-            device_str = str(device) if isinstance(device, torch.device) else device
-            terminal_MOCU = MOCU_torchdiffeq(K_max, w, N, h, M, T, a_lower, a_upper, 0, device=device_str)
+            # ERROR: No MOCU available - this should not happen with proper data generation
+            raise RuntimeError(
+                "No terminal MOCU available in trajectory and no MPNN predictor provided. "
+                "Please regenerate data with --use-mpnn-predictor or provide mocu_model. "
+                "torchdiffeq is NOT used during training (only for evaluation)."
+            )
         
         # CRITICAL: Ensure terminal_MOCU is a Python float (not a tensor) before using in computation
         # This prevents any gradient graph connections to MPNN model
@@ -416,8 +437,8 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         
         # CRITICAL: Validate before combining loss components
         # Use direct accumulation instead of stack+sum to avoid potential memory issues
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # REMOVED: torch.cuda.synchronize() here - not needed and can cause hangs
+        # PyTorch handles CUDA synchronization automatically
         
         try:
             # ALTERNATIVE APPROACH: Accumulate loss directly instead of stacking
@@ -469,10 +490,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Ensure MPNN model is in eval mode and not accumulating gradients
             mocu_model.eval()
         
-        # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
-        # For production, PyTorch handles CUDA synchronization automatically
-        if torch.cuda.is_available() and CUDA_LAUNCH_BLOCKING == '1':
-            torch.cuda.synchronize()
+        # REMOVED: torch.cuda.synchronize() before backward
+        # This was causing hangs - PyTorch handles synchronization automatically
+        # Only synchronize if explicitly debugging (CUDA_LAUNCH_BLOCKING='1')
         
         # CRITICAL: Segfault diagnosis
         # The segfault occurs in PyTorch's C++ autograd engine during backward()
@@ -484,27 +504,26 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         try:
             # Ensure we're on the correct device before backward
             if loss.device.type == 'cuda' and torch.cuda.is_available():
-                # Force CUDA synchronization and context check before backward
-                torch.cuda.synchronize()
-                # Verify CUDA context is still valid
+                # REMOVED: Multiple torch.cuda.synchronize() calls that can cause hangs
+                # Only verify CUDA context is still valid (no sync)
                 try:
                     test_op = torch.zeros(1, device=loss.device)
                     del test_op
-                    torch.cuda.synchronize()
+                    # Don't synchronize - let PyTorch handle it
                 except Exception:
                     pass  # Silent check
             
             # Perform backward pass
-            try:
-                loss.backward(retain_graph=False)
-            except RuntimeError as backward_error:
-                # PyTorch's backward may raise RuntimeError for CUDA errors
-                print(f"\n{'='*80}")
-                print(f"[BACKWARD ERROR] RuntimeError during backward pass:")
-                print(f"[BACKWARD ERROR] {backward_error}")
-                print(f"[BACKWARD ERROR] This indicates a CUDA error in autograd engine")
-                print(f"{'='*80}\n")
-                raise
+            # REMOVED: Extra try-except nesting - simplified error handling
+            loss.backward(retain_graph=False)
+        except RuntimeError as backward_error:
+            # PyTorch's backward may raise RuntimeError for CUDA errors
+            print(f"\n{'='*80}")
+            print(f"[BACKWARD ERROR] RuntimeError during backward pass:")
+            print(f"[BACKWARD ERROR] {backward_error}")
+            print(f"[BACKWARD ERROR] This indicates a CUDA error in autograd engine")
+            print(f"{'='*80}\n")
+            raise
         except RuntimeError as e:
             print(f"[REINFORCE] ERROR during backward: {e}")
             if torch.cuda.is_available():
@@ -513,9 +532,11 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 print(f"  - Current device: {torch.cuda.current_device()}")
                 print(f"  - Memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
                 try:
-                    torch.cuda.synchronize()
+                    # REMOVED: torch.cuda.synchronize() - can cause hangs if CUDA is corrupted
+                    # Just report the error without synchronizing
+                    pass
                 except:
-                    print("[REINFORCE] CUDA synchronize failed - context may be corrupted")
+                    print("[REINFORCE] CUDA state query failed - context may be corrupted")
             raise
         except Exception as e:
             # Catch any other exception (including potential segfault precursors)
@@ -533,9 +554,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
-        # Ensure optimizer step completes
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        # REMOVED: torch.cuda.synchronize() after optimizer step
+        # PyTorch handles CUDA synchronization automatically
+        # This sync was causing hangs when CUDA context was corrupted
         
         # Update progress bar only periodically to reduce verbosity
         current_loss = loss.item()

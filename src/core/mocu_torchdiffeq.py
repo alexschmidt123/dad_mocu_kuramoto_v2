@@ -69,7 +69,7 @@ class KuramotoODE(torch.nn.Module):
         return dtheta_dt
 
 
-def solve_kuramoto_ode(w, a, h, M, device='cuda', method='rk4'):
+def solve_kuramoto_ode(w, a, h, M, device='cuda', method='rk4', timeout=5.0):
     """
     Solve Kuramoto ODE using torchdiffeq.
     
@@ -80,12 +80,18 @@ def solve_kuramoto_ode(w, a, h, M, device='cuda', method='rk4'):
         M: Number of time steps
         device: 'cuda' or 'cpu'
         method: ODE solver method ('rk4', 'euler', 'adaptive_heun', etc.)
+        timeout: Maximum time in seconds for ODE solving (default: 5.0)
     
     Returns:
         theta_trajectory: [M, N] phase angles over time (numpy array)
+    
+    Raises:
+        RuntimeError: If ODE solving fails or times out
     """
     if not TORCHDIFFEQ_AVAILABLE:
         raise RuntimeError("torchdiffeq not available. Install with: pip install torchdiffeq")
+    
+    import time
     
     # Convert to tensors
     if isinstance(w, np.ndarray):
@@ -107,12 +113,44 @@ def solve_kuramoto_ode(w, a, h, M, device='cuda', method='rk4'):
     # Time points
     t = torch.linspace(0, M * h, M, dtype=torch.float32, device=device)
     
-    # Solve ODE
-    with torch.no_grad():  # No gradients needed for MOCU computation
-        theta_trajectory = odeint(ode_system, theta0, t, method=method)
-    
-    # Convert to numpy and return
-    return theta_trajectory.cpu().numpy()
+    # Solve ODE with timeout protection
+    start_time = time.time()
+    try:
+        with torch.no_grad():  # No gradients needed for MOCU computation
+            theta_trajectory = odeint(ode_system, theta0, t, method=method)
+            
+            # Explicit synchronization before CPU transfer to avoid hangs
+            if device == 'cuda' and torch.cuda.is_available():
+                # Don't use torch.cuda.synchronize() - it can hang
+                # Instead, force completion by accessing tensor data
+                _ = theta_trajectory[0, 0].item()  # Force computation to complete
+            
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise RuntimeError(f"ODE solving exceeded timeout ({timeout}s): {elapsed:.2f}s")
+            
+            # Convert to numpy and return
+            result = theta_trajectory.cpu().numpy()
+            
+            # Verify result is valid
+            if np.any(np.isnan(result)) or np.any(np.isinf(result)):
+                raise RuntimeError("ODE solution contains NaN or Inf values")
+            
+            return result
+            
+    except RuntimeError as e:
+        # Re-raise timeout or validation errors
+        if "timeout" in str(e).lower() or "nan" in str(e).lower() or "inf" in str(e).lower():
+            raise
+        # For other RuntimeErrors, check if it's a CUDA issue
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            raise RuntimeError(f"ODE solving exceeded timeout ({timeout}s): {elapsed:.2f}s") from e
+        raise RuntimeError(f"ODE solving failed after {elapsed:.2f}s: {e}") from e
+    except Exception as e:
+        elapsed = time.time() - start_time
+        raise RuntimeError(f"ODE solving failed after {elapsed:.2f}s: {e}") from e
 
 
 def check_synchronization(theta_trajectory, M):

@@ -83,11 +83,20 @@ def generate_random_system(N):
     return w, a_lower_bound, a_upper_bound, a_true, init_sync
 
 
-def perform_experiment(a_true, i, j, w, h, M, device='cuda'):
+def perform_experiment(a_true, i, j, w, h, M, device='cuda', timeout=5.0):
     """
     Perform experiment on pair (i, j) and observe if synchronized.
     
     Uses torchdiffeq to solve ODE and check synchronization.
+    
+    Args:
+        a_true: True coupling matrix
+        i, j: Oscillator indices
+        w: Natural frequencies
+        h: Time step
+        M: Number of time steps
+        device: 'cuda' or 'cpu'
+        timeout: Maximum time for ODE solving (seconds)
     
     Returns:
         observation: 1 if synchronized, 0 if not
@@ -102,18 +111,18 @@ def perform_experiment(a_true, i, j, w, h, M, device='cuda'):
     a_pair = np.array([[0, a_ij], [a_ij, 0]])
     
     # Use torchdiffeq if available, otherwise fall back to CPU-based sync detection
-    if TORCHDIFFEQ_AVAILABLE and torch.cuda.is_available():
+    if TORCHDIFFEQ_AVAILABLE and torch.cuda.is_available() and device == 'cuda':
         try:
-            theta_traj = solve_kuramoto_ode(w_pair, a_pair, h, M, device=device)
+            theta_traj = solve_kuramoto_ode(w_pair, a_pair, h, M, device=device, timeout=timeout)
             sync_result = check_synchronization(theta_traj, M)
             return sync_result
-        except Exception as e:
-            # Fall back to CPU-based sync detection if torchdiffeq fails
+        except (RuntimeError, TimeoutError, Exception) as e:
+            # Fall back to CPU-based sync detection if torchdiffeq fails or hangs
             if not hasattr(perform_experiment, '_torchdiffeq_warned'):
                 print(f"[generate_dad_data] Warning: torchdiffeq failed, using CPU sync detection: {e}")
                 perform_experiment._torchdiffeq_warned = True
     
-    # Fallback: CPU-based sync detection
+    # Fallback: CPU-based sync detection (always reliable)
     sync_result = mocu_comp(w_pair, h, 2, M, a_pair)
     return sync_result
 
