@@ -319,13 +319,16 @@ def main():
                     'LR': f'{lr:.6f}'
                 })
 
-    # plot and save
+    # plot and save validation outputs to validation/ subfolder
     # Use load_data_name (extracted from folder path) instead of args.name (which might be __USE_OUTPUT_DIR__)
     plot_name = load_data_name if use_output_dir_directly else args.name
-    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, plot_name, model_path_prefix + '/')
+    validation_dir = model_path_prefix + '/validation/'
+    import os
+    os.makedirs(validation_dir, exist_ok=True)
+    plotCurves(train_MSE, train_rank, test_MSE, EPOCH, plot_name, validation_dir)
 
     # save some prediction result
-    savePrediction(data, prediction, std, mean, plot_name, model_path_prefix + '/')
+    savePrediction(data, prediction, std, mean, plot_name, validation_dir)
 
     if args.debug:
         printInstance(data, prediction, std, mean)

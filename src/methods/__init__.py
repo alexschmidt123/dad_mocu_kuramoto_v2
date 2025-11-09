@@ -10,6 +10,7 @@ Available methods:
 - ODE: Static ODE (sampling-based, computes once)
 - ENTROPY: Greedy uncertainty-based selection
 - RANDOM: Random baseline
+- REGRESSION_SCORER: Regression Scorer (MPNN-based, scores designs directly, greedy selection)
 - DAD_MOCU: Deep Adaptive Design with MOCU objective
 
 NOTE: Methods are lazy-imported to avoid unnecessary PyTorch CUDA initialization.

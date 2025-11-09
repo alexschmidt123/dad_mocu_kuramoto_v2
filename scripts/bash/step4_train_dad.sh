@@ -29,17 +29,26 @@ N=$(grep "^N:" "$CONFIG_FILE" | awk '{print $2}')
 DAD_METHOD=$(grep "dad_method:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' || echo "reinforce")
 
 # Get model folder and name from previous step
-MODEL_RUN_FOLDER=$(cat /tmp/mocu_model_folder_${CONFIG_NAME}.txt 2>/dev/null || echo "")
+MODEL_FOLDER=$(cat /tmp/mocu_model_folder_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 MOCU_MODEL_NAME=$(cat /tmp/mocu_model_name_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 
-if [ -z "$MODEL_RUN_FOLDER" ] || [ ! -d "$MODEL_RUN_FOLDER" ]; then
+if [ -z "$MODEL_FOLDER" ] || [ ! -d "$MODEL_FOLDER" ]; then
     echo "Error: MPNN model folder not found. Run step2_train_mpnn.sh first."
     exit 1
 fi
 
+# Check if DAD model already exists - skip training if so
+DAD_MODEL_FILE="${MODEL_FOLDER}dad_policy_N${N}.pth"
+if [ -f "$DAD_MODEL_FILE" ]; then
+    echo "✓ DAD model already exists: $DAD_MODEL_FILE"
+    echo "✓ Skipping DAD training (model detected)"
+    echo "$DAD_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
+    exit 0
+fi
+
 export MOCU_MODEL_NAME="$MOCU_MODEL_NAME"
 
-DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/dad/"
+DATA_FOLDER="${PROJECT_ROOT}/data/${CONFIG_NAME}/"
 DAD_TRAJECTORY_FILE="${DATA_FOLDER}dad_trajectories_N${N}_K4_random.pth"
 
 # Generate DAD data if missing
@@ -76,7 +85,7 @@ if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
     
     # Pre-compute MOCU using MPNN predictor if available and configured
     CMD="python3 generate_dad_data.py --N $N --num-episodes $NUM_EPISODES --K $K --output-dir $ABS_DAD_DATA_FOLDER"
-    if [ "$USE_PRECOMPUTED_MOCU" = "true" ] && [ -n "$MOCU_MODEL_NAME" ] && [ -f "${MODEL_RUN_FOLDER}model.pth" ]; then
+    if [ "$USE_PRECOMPUTED_MOCU" = "true" ] && [ -n "$MOCU_MODEL_NAME" ] && [ -f "${MODEL_FOLDER}model.pth" ]; then
         CMD="$CMD --use-mpnn-predictor --mpnn-model-name $MOCU_MODEL_NAME"
         echo "  Using MPNN predictor to pre-compute MOCU values"
     else
@@ -95,7 +104,7 @@ ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$
 
 USE_PREDICTED_MOCU=""
 if [ "$DAD_METHOD" = "reinforce" ]; then
-    if [ -f "${MODEL_RUN_FOLDER}model.pth" ]; then
+    if [ -f "${MODEL_FOLDER}model.pth" ]; then
         USE_PREDICTED_MOCU="--use-predicted-mocu"
     fi
 fi
@@ -106,15 +115,9 @@ python3 train_dad_policy.py \
     --name "dad_policy_N${N}" \
     --epochs 100 \
     --batch-size 64 \
-    --output-dir "$MODEL_RUN_FOLDER" \
+    --output-dir "$MODEL_FOLDER" \
     $USE_PREDICTED_MOCU
 
-# Copy DAD data to models folder for organization (together with MPNN and DAD policy)
-DAD_DATA_DEST="${MODEL_RUN_FOLDER}dad_data/"
-mkdir -p "$DAD_DATA_DEST"
-cp "$ABS_DAD_TRAJ_FILE" "$DAD_DATA_DEST" 2>/dev/null || true
-
-echo "✓ DAD policy trained: ${MODEL_RUN_FOLDER}dad_policy_N${N}.pth"
-echo "✓ DAD data copied to: ${DAD_DATA_DEST}"
-echo "${MODEL_RUN_FOLDER}dad_policy_N${N}.pth" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
+echo "✓ DAD policy trained: ${DAD_MODEL_FILE}"
+echo "$DAD_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
 

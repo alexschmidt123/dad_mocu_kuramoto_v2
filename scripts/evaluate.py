@@ -274,6 +274,11 @@ if __name__ == '__main__':
                     method = RANDOM_Method(N, K_max, deltaT, MReal, TReal, it_idx,
                                           seed=numberOfVaildSimulations)
                 
+                elif method_name == 'REGRESSION_SCORER' or method_name == 'REGRESSION':
+                    from src.methods.regression_scorer import RegressionScorer_Method
+                    method = RegressionScorer_Method(N, K_max, deltaT, MReal, TReal, it_idx,
+                                                     model_name=os.getenv('MOCU_MODEL_NAME', f'cons{N}'))
+                
                 elif method_name == 'DAD':
                     from src.methods.dad_mocu import DAD_MOCU_Method
                     policy_path = None

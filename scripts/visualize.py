@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description='Visualize MOCU-OED results')
 parser.add_argument('--N', type=int, default=5, help='Number of oscillators')
 parser.add_argument('--update_cnt', type=int, default=None, help='Number of updates (auto-detect from data if not provided)')
 parser.add_argument('--result_folder', type=str, required=True, help='Results directory to visualize')
+parser.add_argument('--baseline_only', action='store_true', help='Only visualize baseline methods (exclude DAD)')
 args = parser.parse_args()
 
 N = args.N
@@ -25,7 +26,10 @@ if not resultFolder.endswith(os.sep):
 
 # Keep iODE in list for index consistency, even though it's not used in experiments
 # DAD: Deep Adaptive Design (new method)
-listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM', 'DAD']
+if args.baseline_only:
+    listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM']
+else:
+    listMethods = ['iNN', 'NN', 'iODE', 'ODE', 'ENTROPY', 'RANDOM', 'DAD']
 
 # Detect which methods have results by checking which files exist
 available_methods = []
@@ -119,7 +123,10 @@ plt.xticks(np.arange(0, update_cnt + 1, 1))
 plt.xlabel('Number of updates')
 plt.ylabel('MOCU')
 plt.grid(True)
-mocu_plot_path = os.path.join(resultFolder, f'MOCU_{N}.png')
+if args.baseline_only:
+    mocu_plot_path = os.path.join(resultFolder, f'MOCU_{N}_baselines_only.png')
+else:
+    mocu_plot_path = os.path.join(resultFolder, f'MOCU_{N}.png')
 plt.savefig(mocu_plot_path, dpi=300)
 plt.close()
 print(f"✓ Saved MOCU plot: {mocu_plot_path}")
@@ -153,7 +160,10 @@ plt.ylabel('Cumulative time complexity (in seconds)')
 plt.xticks(np.arange(0, update_cnt + 1, 1)) 
 plt.ylim(1, 10000)
 plt.grid(True)
-time_plot_path = os.path.join(resultFolder, f'timeComplexity_{N}.png')
+if args.baseline_only:
+    time_plot_path = os.path.join(resultFolder, f'timeComplexity_{N}_baselines_only.png')
+else:
+    time_plot_path = os.path.join(resultFolder, f'timeComplexity_{N}.png')
 fig.savefig(time_plot_path, dpi=300)
 plt.close(fig)
 print(f"✓ Saved time complexity plot: {time_plot_path}")
@@ -161,5 +171,8 @@ print(f"✓ Saved time complexity plot: {time_plot_path}")
 print(f"\n✓ Visualization complete!")
 print(f"  Methods plotted: {', '.join(available_methods)}")
 print(f"  Output folder: {resultFolder}")
-print(f"  Files: MOCU_{N}.png, timeComplexity_{N}.png")
+if args.baseline_only:
+    print(f"  Files: MOCU_{N}_baselines_only.png, timeComplexity_{N}_baselines_only.png")
+else:
+    print(f"  Files: MOCU_{N}.png, timeComplexity_{N}.png")
 

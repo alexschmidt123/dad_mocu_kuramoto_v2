@@ -17,6 +17,8 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 TIMESTAMP=$(date +"%m%d%Y_%H%M%S")
 
+# Use timestamp for results folder to allow multiple runs
+
 # Get info from previous steps
 MOCU_MODEL_NAME=$(cat /tmp/mocu_model_name_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 
@@ -58,4 +60,20 @@ python3 evaluate.py --methods "$BASELINE_METHODS"
 
 echo "✓ Baseline evaluation complete: $RESULT_RUN_FOLDER"
 echo "$RESULT_RUN_FOLDER" > /tmp/baseline_results_folder_${CONFIG_NAME}.txt
+
+# Step 3.5: Visualize baseline-only results
+echo ""
+echo "Generating baseline-only visualizations..."
+ABS_RESULT_FOLDER=$(cd "$RESULT_RUN_FOLDER" && pwd)
+if [ "${ABS_RESULT_FOLDER: -1}" != "/" ]; then
+    ABS_RESULT_FOLDER="${ABS_RESULT_FOLDER}/"
+fi
+
+if [ -n "$UPDATE_CNT" ]; then
+    python3 visualize.py --N $N --update_cnt $UPDATE_CNT --result_folder "$ABS_RESULT_FOLDER" --baseline_only
+else
+    python3 visualize.py --N $N --result_folder "$ABS_RESULT_FOLDER" --baseline_only
+fi
+
+echo "✓ Baseline-only visualizations generated"
 

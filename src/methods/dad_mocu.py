@@ -64,20 +64,18 @@ class DAD_MOCU_Method(OEDMethod):
     def _load_policy(self, policy_model_path):
         """Load trained DAD policy network."""
         if policy_model_path is None:
-            # Try to find policy in new structure: models/{config_name}/{timestamp}/dad_policy_N{N}.pth
-            # Search in all config folders for the most recent policy
+            # Try to find policy in new structure: models/{config_name}/dad_policy_N{N}.pth
+            # Search in all config folders
             models_root = PROJECT_ROOT / 'models'
             found_paths = []
             
             if models_root.exists():
-                # Search for dad_policy_N{N}.pth in all timestamp folders
+                # Search for dad_policy_N{N}.pth in all config folders
                 for config_dir in models_root.iterdir():
                     if config_dir.is_dir():
-                        for timestamp_dir in config_dir.iterdir():
-                            if timestamp_dir.is_dir():
-                                candidate = timestamp_dir / f'dad_policy_N{self.N}.pth'
-                                if candidate.exists():
-                                    found_paths.append((candidate, timestamp_dir.stat().st_mtime))
+                        candidate = config_dir / f'dad_policy_N{self.N}.pth'
+                        if candidate.exists():
+                            found_paths.append((candidate, candidate.stat().st_mtime))
             
             # Use most recently modified if found
             if found_paths:
@@ -91,7 +89,7 @@ class DAD_MOCU_Method(OEDMethod):
                 if not policy_model_path.exists():
                     raise FileNotFoundError(
                         f"Policy model not found. Searched in:\n"
-                        f"  - models/*/TIMESTAMP/dad_policy_N{self.N}.pth (new structure)\n"
+                        f"  - models/*/dad_policy_N{self.N}.pth (new structure)\n"
                         f"  - models/dad_policy_N{self.N}.pth (old structure)\n"
                         f"Please train a DAD policy first using:\n"
                         f"  python scripts/train_dad_policy.py --data-path <data> --name dad_policy_N{self.N}"

@@ -232,8 +232,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
     # Initialize baseline as None - compute it from first batch of rewards
     # This prevents baseline from starting at 0 and causing large initial advantages
     baseline = None
-    baseline_alpha = 0.9
+    baseline_alpha = 0.99  # Slower baseline update to prevent premature convergence
     reward_list = []  # Track rewards for better baseline initialization
+    all_rewards = []  # Track all rewards for batch baseline computation
     
     h = 1.0 / 160.0
     T = 5.0
@@ -374,17 +375,41 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             terminal_MOCU = terminal_MOCU.detach().cpu().item()
         reward = float(-terminal_MOCU)
         reward_list.append(reward)
+        all_rewards.append(reward)
         
-        # Initialize baseline from first few rewards for better stability
-        if use_baseline:
-            if baseline is None:
-                # Initialize baseline after first 10 rewards
-                if len(reward_list) >= 10:
-                    baseline = np.mean(reward_list)
+        # Compute advantage using reward normalization (z-score) to prevent baseline from canceling signal
+        # This is more robust than adaptive baseline when reward variance is low
+        if len(all_rewards) >= 50:
+            # Use running statistics for normalization
+            reward_mean = np.mean(all_rewards)
+            reward_std = np.std(all_rewards)
+            
+            if reward_std > 1e-6:  # Avoid division by zero
+                # Z-score normalization: (reward - mean) / std
+                # This ensures advantages have consistent scale regardless of reward distribution
+                advantage = float((reward - reward_mean) / reward_std)
+                
+                # Clip to prevent extreme values that could cause gradient explosion
+                advantage = np.clip(advantage, -5.0, 5.0)
             else:
-                baseline = baseline_alpha * baseline + (1 - baseline_alpha) * reward
+                # Extremely low variance: all rewards are nearly identical
+                # In this case, use raw reward (no normalization) to maintain some signal
+                advantage = float(reward - reward_mean) if use_baseline else float(reward)
+        else:
+            # Not enough samples yet: use simple baseline or raw reward
+            if use_baseline:
+                if baseline is None:
+                    # Initialize baseline after collecting some rewards
+                    if len(all_rewards) >= 10:
+                        baseline = np.mean(all_rewards)
+                else:
+                    # Update baseline slowly
+                    baseline = baseline_alpha * baseline + (1 - baseline_alpha) * reward
+                
+                advantage = float(reward - baseline) if baseline is not None else float(reward)
+            else:
+                advantage = float(reward)
         
-        advantage = float(reward - baseline if (use_baseline and baseline is not None) else reward)
         returns = [advantage] * len(log_probs)
         
         # CRITICAL: Validate all log_probs tensors before building loss computation graph
@@ -561,8 +586,15 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         # Update progress bar only periodically to reduce verbosity
         current_loss = loss.item()
         if (traj_idx + 1) % update_frequency == 0 or (traj_idx + 1) == len(trajectories):
-            # Only update postfix every N trajectories
-            traj_pbar.set_postfix({'loss': f'{current_loss:.4f}', 'reward': f'{reward:.4f}'})
+            # Show diagnostic info including normalized statistics
+            reward_mean = np.mean(all_rewards) if len(all_rewards) > 0 else 0.0
+            reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
+            traj_pbar.set_postfix({
+                'loss': f'{current_loss:.4f}', 
+                'reward': f'{reward:.4f}',
+                'adv': f'{advantage:.4f}',
+                'r_std': f'{reward_std:.4f}'
+            })
         
         total_loss += current_loss
         total_reward += reward
@@ -696,20 +728,17 @@ def main():
                         # Get model name from environment variable, config, or auto-detect from output_dir
                         model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name')
                         
-                        # Auto-detect from output_dir if not provided (e.g., models/fast_config/11012025_212842/)
+                        # Auto-detect from output_dir if not provided (e.g., models/fast_config/)
                         if not model_name and args.output_dir:
                             output_path = Path(args.output_dir).resolve()
                             parts = output_path.parts
-                            # Look for pattern: .../models/{config}/{timestamp}/
+                            # Look for pattern: .../models/{config}/
                             try:
                                 models_idx = list(parts).index('models')
-                                if models_idx + 2 < len(parts):
+                                if models_idx + 1 < len(parts):
                                     config_part = parts[models_idx + 1]  # config name
-                                    timestamp_part = parts[models_idx + 2]  # timestamp
-                                    # Check if timestamp matches format (MMDDYYYY_HHMMSS)
-                                    if re.match(r'\d{8}_\d{6}', timestamp_part):
-                                        model_name = f"{config_part}_{timestamp_part}"
-                                        print(f"[REINFORCE] Auto-detected model name from output_dir: {model_name}")
+                                    model_name = config_part
+                                    print(f"[REINFORCE] Auto-detected model name from output_dir: {model_name}")
                             except (ValueError, IndexError):
                                 pass  # Couldn't parse path, will try default
                         

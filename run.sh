@@ -81,9 +81,9 @@ echo ""
 echo -e "${GREEN}[Step 2/6]${NC} Training MPNN predictor..."
 bash "${PROJECT_ROOT}/scripts/bash/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
 
-# Step 3: Evaluate ALL baseline methods first (uses PyCUDA for MOCU computation - original paper workflow)
+# Step 3: Evaluate ALL baseline methods first and visualize (uses PyCUDA for MOCU computation - original paper workflow)
 echo ""
-echo -e "${GREEN}[Step 3/6]${NC} Running baseline evaluation (ALL original methods: iNN, NN, ODE, ENTROPY, RANDOM)..."
+echo -e "${GREEN}[Step 3/6]${NC} Running baseline evaluation and visualization (ALL original methods: iNN, NN, ODE, ENTROPY, RANDOM)..."
 bash "${PROJECT_ROOT}/scripts/bash/step3_evaluate_baselines.sh" "$CONFIG_FILE"
 
 # Step 4: Generate DAD training data and train DAD policy (if DAD is in methods list)
@@ -107,10 +107,14 @@ else
     echo -e "${BLUE}[Step 5/6]${NC} Skipping DAD evaluation (not in methods list)"
 fi
 
-# Step 6: Generate visualizations (runs in separate process)
+# Step 6: Generate visualizations for all methods (baselines + DAD)
 echo ""
-echo -e "${GREEN}[Step 6/6]${NC} Generating visualizations..."
-bash "${PROJECT_ROOT}/scripts/bash/step6_visualize.sh" "$CONFIG_FILE"
+if echo "$METHODS" | grep -q "DAD"; then
+    echo -e "${GREEN}[Step 6/6]${NC} Generating visualizations (all methods: baselines + DAD)..."
+    bash "${PROJECT_ROOT}/scripts/bash/step6_visualize.sh" "$CONFIG_FILE"
+else
+    echo -e "${BLUE}[Step 6/6]${NC} Skipping visualization (baseline-only plots already generated in Step 3)"
+fi
 
 # Summary
 echo ""

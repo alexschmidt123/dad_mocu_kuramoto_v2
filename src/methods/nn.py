@@ -65,37 +65,19 @@ class NN_Method(OEDMethod):
     
     def _load_model_and_stats(self):
         """Load trained MPNN model and normalization statistics."""
-        # Support both new structure (models/{config}/{timestamp}/) and old (models/{name}/)
-        model_path = None
-        stats_path = None
+        # New structure: models/{config_name}/model.pth and statistics.pth
+        # model_name is just the config name (e.g., "N5_config")
+        model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
+        stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
         
-        # Check if model_name contains timestamp (format: config_MMDDYYYY_HHMMSS)
-        # Timestamp format: MMDDYYYY_HHMMSS (e.g., 11012025_163858)
-        if '_' in self.model_name:
-            parts = self.model_name.split('_')
-            # Check if last part is 6 digits (HHMMSS) and second-to-last is 8 digits (MMDDYYYY)
-            if len(parts) >= 3 and len(parts[-1]) == 6 and parts[-1].isdigit() and len(parts[-2]) == 8 and parts[-2].isdigit():
-                # Last two parts form timestamp: MMDDYYYY_HHMMSS
-                timestamp = f"{parts[-2]}_{parts[-1]}"
-                config_name = '_'.join(parts[:-2])
-                # Try timestamped path first
-                candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
-                candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
-                if candidate_model.exists() and candidate_stats.exists():
-                    model_path = candidate_model
-                    stats_path = candidate_stats
-                else:
-                    # Fall back to flat structure
-                    model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
-                    stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
-            else:
-                # Doesn't match timestamp pattern, try flat structure
-                model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
-                stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
-        else:
-            # Old structure: models/{model_name}/
-            model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
-            stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
+        # Fallback to old structure for backward compatibility
+        if not model_path.exists() or not stats_path.exists():
+            # Try old flat structure: models/{model_name}/
+            old_model_path = PROJECT_ROOT / 'models' / self.model_name / 'model.pth'
+            old_stats_path = PROJECT_ROOT / 'models' / self.model_name / 'statistics.pth'
+            if old_model_path.exists() and old_stats_path.exists():
+                model_path = old_model_path
+                stats_path = old_stats_path
         
         if not model_path.exists() or not stats_path.exists():
             raise FileNotFoundError(

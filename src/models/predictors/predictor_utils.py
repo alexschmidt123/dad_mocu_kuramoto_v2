@@ -38,59 +38,26 @@ def load_mpnn_predictor(model_name, device='cuda'):
     # torch is already imported at module level
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     
-    # New structure: models/{config_name}/{timestamp}/model.pth
-    # But also support old structure: models/{model_name}/model.pth
-    # Try new structure first (timestamped), then fall back to old
-    model_path = None
-    stats_path = None
+    # New structure: models/{config_name}/model.pth and statistics.pth
+    # model_name is just the config name (e.g., "N5_config")
+    model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
+    stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
     
-    # New structure: models/{config_name}/{timestamp}/model.pth
-    # Model name format from run.sh: {config_name}_{MMDDYYYY_HHMMSS}
-    # Timestamp format: MMDDYYYY_HHMMSS (e.g., 11012025_163858)
-    # So splitting by '_' gives: ['config', 'name', 'MMDDYYYY', 'HHMMSS']
-    # We need to recognize that last 2 parts form the timestamp
-    if '_' in model_name:
-        parts = model_name.split('_')
-        # Check if last part is 6 digits (HHMMSS format) and second-to-last is 8 digits (MMDDYYYY format)
-        if len(parts) >= 3 and len(parts[-1]) == 6 and parts[-1].isdigit() and len(parts[-2]) == 8 and parts[-2].isdigit():
-            # Last two parts form timestamp: MMDDYYYY_HHMMSS
-            timestamp = f"{parts[-2]}_{parts[-1]}"
-            config_name = '_'.join(parts[:-2])
-            # Try timestamped path: models/{config_name}/{timestamp}/model.pth
-            candidate_model = PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'
-            candidate_stats = PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'
-            if candidate_model.exists() and candidate_stats.exists():
-                model_path = candidate_model
-                stats_path = candidate_stats
-            else:
-                # Fall back to flat structure
-                model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
-                stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
-        else:
-            # Doesn't match timestamp pattern, try flat structure
-            model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
-            stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
-    else:
-        # Old structure: models/{model_name}/
-        model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
-        stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
+    # Fallback to old structure for backward compatibility
+    if not model_path.exists() or not stats_path.exists():
+        # Try old flat structure: models/{model_name}/
+        old_model_path = PROJECT_ROOT / 'models' / model_name / 'model.pth'
+        old_stats_path = PROJECT_ROOT / 'models' / model_name / 'statistics.pth'
+        if old_model_path.exists() and old_stats_path.exists():
+            model_path = old_model_path
+            stats_path = old_stats_path
     
     if not model_path.exists() or not stats_path.exists():
-        # Provide detailed error message with searched paths
-        searched_paths = []
-        if '_' in model_name:
-            parts = model_name.split('_')
-            if len(parts) >= 3 and len(parts[-1]) == 6 and parts[-1].isdigit() and len(parts[-2]) == 8 and parts[-2].isdigit():
-                timestamp = f"{parts[-2]}_{parts[-1]}"
-                config_name = '_'.join(parts[:-2])
-                searched_paths.append(f"  - {PROJECT_ROOT / 'models' / config_name / timestamp / 'model.pth'}")
-                searched_paths.append(f"  - {PROJECT_ROOT / 'models' / config_name / timestamp / 'statistics.pth'}")
-        searched_paths.append(f"  - {PROJECT_ROOT / 'models' / model_name / 'model.pth'}")
-        searched_paths.append(f"  - {PROJECT_ROOT / 'models' / model_name / 'statistics.pth'}")
-        
         raise FileNotFoundError(
             f"Model or statistics not found for {model_name}.\n"
-            f"Searched paths:\n" + "\n".join(searched_paths) + "\n"
+            f"Searched paths:\n"
+            f"  - {PROJECT_ROOT / 'models' / model_name / 'model.pth'}\n"
+            f"  - {PROJECT_ROOT / 'models' / model_name / 'statistics.pth'}\n"
             f"Please train MPNN predictor first:\n"
             f"  python scripts/train_predictor.py --name {model_name}"
         )
