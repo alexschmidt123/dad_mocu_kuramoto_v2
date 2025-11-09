@@ -321,7 +321,6 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Policy forward pass
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)
             
-            
             dist = torch.distributions.Categorical(probs=action_probs)
             action_idx = dist.sample()
             log_prob = dist.log_prob(action_idx)
@@ -379,25 +378,33 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         
         # Compute advantage using reward normalization (z-score) to prevent baseline from canceling signal
         # This is more robust than adaptive baseline when reward variance is low
+        reward_mean = np.mean(all_rewards) if len(all_rewards) > 0 else 0.0
+        reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
+        
         if len(all_rewards) >= 50:
-            # Use running statistics for normalization
-            reward_mean = np.mean(all_rewards)
-            reward_std = np.std(all_rewards)
-            
-            if reward_std > 1e-6:  # Avoid division by zero
+            if reward_std > 1e-3:  # Sufficient variance for z-score normalization
                 # Z-score normalization: (reward - mean) / std
                 # This ensures advantages have consistent scale regardless of reward distribution
                 advantage = float((reward - reward_mean) / reward_std)
                 
                 # Clip to prevent extreme values that could cause gradient explosion
                 advantage = np.clip(advantage, -5.0, 5.0)
+            elif reward_std > 1e-6:  # Very low but non-zero variance
+                # Use aggressive scaling to maintain learning signal
+                advantage = float((reward - reward_mean) / max(reward_std, 1e-4)) * 10.0
+                advantage = np.clip(advantage, -5.0, 5.0)
             else:
-                # Extremely low variance: all rewards are nearly identical
-                # In this case, use raw reward (no normalization) to maintain some signal
-                advantage = float(reward - reward_mean) if use_baseline else float(reward)
+                # Extremely low variance (all rewards nearly identical): use constant advantage
+                # This encourages exploration when all trajectories have similar outcomes
+                # Use a small positive advantage to encourage policy improvement
+                advantage = 1.0  # Constant positive signal to encourage exploration
         else:
             # Not enough samples yet: use simple baseline or raw reward
-            if use_baseline:
+            # CRITICAL: If variance is extremely low, use constant advantage even early in training
+            if reward_std < 1e-6:
+                # All rewards are identical: use constant advantage to maintain learning signal
+                advantage = 1.0
+            elif use_baseline and reward_std > 1e-6:
                 if baseline is None:
                     # Initialize baseline after collecting some rewards
                     if len(all_rewards) >= 10:
@@ -408,7 +415,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 
                 advantage = float(reward - baseline) if baseline is not None else float(reward)
             else:
-                advantage = float(reward)
+                # Low variance or no baseline: use raw reward with scaling
+                advantage = float(reward) * 10.0  # Scale to maintain signal
+                advantage = np.clip(advantage, -5.0, 5.0)
         
         returns = [advantage] * len(log_probs)
         
@@ -435,6 +444,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         # Build loss computation graph (only involves policy network, not MPNN)
         # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
         # Use validated log_probs to prevent memory access errors
+        # Policy is objective-based: optimize MOCU directly, not entropy
         policy_loss = []
         for idx, (log_prob, advantage_val) in enumerate(zip(valid_log_probs, returns)):
             try:
@@ -447,6 +457,8 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 advantage_tensor = torch.tensor(float(advantage_val), device=log_prob.device, requires_grad=False, dtype=log_prob.dtype)
                 
                 # Build loss component with explicit error checking
+                # REINFORCE loss: -log_prob * advantage
+                # This optimizes MOCU directly (reward = -terminal_MOCU, so lower MOCU = higher reward)
                 loss_component = -log_prob * advantage_tensor
                 
                 # Validate loss component immediately
@@ -591,19 +603,37 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
             # Show advantage magnitude to diagnose if it's too small
             adv_magnitude = abs(advantage)
+            
+            # Calculate average log_prob magnitude for diagnostics
+            avg_log_prob = np.mean([abs(lp.item()) for lp in log_probs]) if log_probs else 0.0
+            
             traj_pbar.set_postfix({
                 'loss': f'{current_loss:.4f}', 
                 'reward': f'{reward:.4f}',
                 'adv': f'{advantage:.4f}',
                 '|adv|': f'{adv_magnitude:.4f}',
-                'r_std': f'{reward_std:.4f}'
+                'r_std': f'{reward_std:.6f}',
+                '|log_p|': f'{avg_log_prob:.4f}'
             })
             
-            # Warn if advantage is too small (indicating baseline is canceling signal)
-            if len(all_rewards) > 50 and adv_magnitude < 0.01:
-                if not hasattr(train_reinforce, '_small_adv_warned'):
-                    traj_pbar.write(f"[WARNING] Advantage magnitude is very small ({adv_magnitude:.6f}) - baseline may be canceling learning signal")
-                    train_reinforce._small_adv_warned = True
+            # Diagnostic warnings
+            if len(all_rewards) >= 10:
+                if reward_std < 1e-6:
+                    if not hasattr(train_reinforce, '_zero_var_warned'):
+                        traj_pbar.write(f"[WARNING] Zero reward variance detected (std={reward_std:.8f}) - using constant advantage=1.0")
+                        traj_pbar.write(f"  All rewards are identical: {reward:.6f}")
+                        traj_pbar.write(f"  This suggests all trajectories have the same terminal MOCU - check data generation!")
+                        train_reinforce._zero_var_warned = True
+                
+                if adv_magnitude < 0.01 and reward_std > 1e-6:
+                    if not hasattr(train_reinforce, '_small_adv_warned'):
+                        traj_pbar.write(f"[WARNING] Advantage magnitude is very small ({adv_magnitude:.6f}) - baseline may be canceling learning signal")
+                        train_reinforce._small_adv_warned = True
+                
+                if avg_log_prob < 1e-6:
+                    if not hasattr(train_reinforce, '_small_logp_warned'):
+                        traj_pbar.write(f"[WARNING] Log probabilities are very small ({avg_log_prob:.8f}) - policy may be too deterministic")
+                        train_reinforce._small_logp_warned = True
         
         total_loss += current_loss
         total_reward += reward

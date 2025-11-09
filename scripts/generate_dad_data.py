@@ -332,6 +332,29 @@ def main():
     # Check if MOCU values were computed
     has_mocu = any('terminal_MOCU' in traj for traj in trajectories)
     
+    # Diagnostic: Check MOCU variance in generated data
+    if has_mocu:
+        mocu_values = [traj.get('terminal_MOCU', None) for traj in trajectories if 'terminal_MOCU' in traj]
+        if mocu_values:
+            mocu_array = np.array(mocu_values)
+            mocu_mean = np.mean(mocu_array)
+            mocu_std = np.std(mocu_array)
+            mocu_min = np.min(mocu_array)
+            mocu_max = np.max(mocu_array)
+            print(f"\n[DIAGNOSTIC] Terminal MOCU statistics in generated data:")
+            print(f"  Count: {len(mocu_values)}")
+            print(f"  Mean: {mocu_mean:.6f}")
+            print(f"  Std: {mocu_std:.8f}")
+            print(f"  Min: {mocu_min:.6f}")
+            print(f"  Max: {mocu_max:.6f}")
+            if mocu_std < 1e-6:
+                print(f"  [WARNING] All terminal MOCU values are nearly identical!")
+                print(f"  This will cause zero reward variance during REINFORCE training.")
+                print(f"  Possible causes:")
+                print(f"    1. MPNN predictor returning constant values")
+                print(f"    2. Random policy generating very similar trajectories")
+                print(f"    3. All trajectories converging to similar final bounds")
+    
     torch.save({
         'trajectories': trajectories,
         'config': {
