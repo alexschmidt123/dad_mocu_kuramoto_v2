@@ -332,7 +332,7 @@ def main():
     # Check if MOCU values were computed
     has_mocu = any('terminal_MOCU' in traj for traj in trajectories)
     
-    # Diagnostic: Check MOCU variance in generated data
+    # Diagnostic: Check MOCU variance and trajectory diversity in generated data
     if has_mocu:
         mocu_values = [traj.get('terminal_MOCU', None) for traj in trajectories if 'terminal_MOCU' in traj]
         if mocu_values:
@@ -347,13 +347,90 @@ def main():
             print(f"  Std: {mocu_std:.8f}")
             print(f"  Min: {mocu_min:.6f}")
             print(f"  Max: {mocu_max:.6f}")
+            
+            # Check trajectory diversity to distinguish MPNN vs trajectory issues
+            print(f"\n[DIAGNOSTIC] Trajectory diversity analysis:")
+            
+            # 1. Check final bounds diversity
+            final_bounds_lower = []
+            final_bounds_upper = []
+            for traj in trajectories:
+                if 'states' in traj and len(traj['states']) > 0:
+                    final_state = traj['states'][-1]
+                    final_bounds_lower.append(final_state[0])  # a_lower
+                    final_bounds_upper.append(final_state[1])  # a_upper
+            
+            if final_bounds_lower:
+                # Compute variance of final bounds
+                final_lower_array = np.array(final_bounds_lower)  # [num_traj, N, N]
+                final_upper_array = np.array(final_bounds_upper)  # [num_traj, N, N]
+                
+                # Compute variance across trajectories for each (i,j) pair
+                lower_var = np.var(final_lower_array, axis=0)  # [N, N]
+                upper_var = np.var(final_upper_array, axis=0)  # [N, N]
+                
+                # Average variance across all pairs
+                avg_lower_var = np.mean(lower_var[lower_var > 0])  # Exclude diagonal (always 0)
+                avg_upper_var = np.mean(upper_var[upper_var > 0])
+                
+                print(f"  Final bounds variance:")
+                print(f"    Avg lower bound variance: {avg_lower_var:.8f}")
+                print(f"    Avg upper bound variance: {avg_upper_var:.8f}")
+                
+                # Check if bounds are very similar
+                if avg_lower_var < 1e-6 and avg_upper_var < 1e-6:
+                    print(f"    [WARNING] All trajectories have nearly identical final bounds!")
+                    print(f"    This suggests the random policy is generating very similar trajectories.")
+                else:
+                    print(f"    ✓ Trajectories have diverse final bounds (good diversity)")
+            
+            # 2. Check action sequence diversity
+            action_sequences = [tuple(traj.get('actions', [])) for traj in trajectories]
+            unique_sequences = len(set(action_sequences))
+            total_sequences = len(action_sequences)
+            diversity_ratio = unique_sequences / total_sequences if total_sequences > 0 else 0.0
+            
+            print(f"  Action sequence diversity:")
+            print(f"    Unique sequences: {unique_sequences}/{total_sequences}")
+            print(f"    Diversity ratio: {diversity_ratio:.4f}")
+            if diversity_ratio < 0.5:
+                print(f"    [WARNING] Many duplicate action sequences - random policy may be too constrained")
+            else:
+                print(f"    ✓ Good action sequence diversity")
+            
+            # 3. Check if MOCU variance matches bounds diversity
+            print(f"\n  MOCU vs Trajectory Diversity Analysis:")
             if mocu_std < 1e-6:
-                print(f"  [WARNING] All terminal MOCU values are nearly identical!")
+                # Check if we have bounds diversity data
+                if final_bounds_lower:
+                    if avg_lower_var < 1e-6 and avg_upper_var < 1e-6:
+                        print(f"    [CONCLUSION] Zero MOCU variance + zero bounds variance")
+                        print(f"    → Issue: Random policy generating very similar trajectories")
+                        print(f"    → Solution: This is expected for random policy - policy will learn to diversify")
+                    elif mocu_min == mocu_max:
+                        print(f"    [CONCLUSION] Zero MOCU variance but diverse bounds")
+                        print(f"    → Issue: MPNN predictor returning constant values for different states")
+                        print(f"    → Solution: Check MPNN model - may need retraining or has a bug")
+                    else:
+                        print(f"    [CONCLUSION] Very low MOCU variance (std={mocu_std:.8f}) with some bounds diversity")
+                        print(f"    → Issue: MPNN may be collapsing predictions or trajectories are too similar")
+                else:
+                    # No bounds data available
+                    if mocu_min == mocu_max:
+                        print(f"    [CONCLUSION] All MOCU values are exactly identical (min=max={mocu_min:.6f})")
+                        print(f"    → Issue: MPNN predictor likely returning constant values")
+                        print(f"    → Solution: Check MPNN model - may need retraining or has a bug")
+                    else:
+                        print(f"    [CONCLUSION] Very low MOCU variance (std={mocu_std:.8f})")
+                        print(f"    → Issue: MPNN may be collapsing predictions or trajectories are too similar")
+            else:
+                print(f"    ✓ MOCU variance is non-zero (std={mocu_std:.8f})")
+                print(f"    → This should work for REINFORCE training")
+            
+            if mocu_std < 1e-6:
+                print(f"\n  [WARNING] All terminal MOCU values are nearly identical!")
                 print(f"  This will cause zero reward variance during REINFORCE training.")
-                print(f"  Possible causes:")
-                print(f"    1. MPNN predictor returning constant values")
-                print(f"    2. Random policy generating very similar trajectories")
-                print(f"    3. All trajectories converging to similar final bounds")
+                print(f"  See analysis above for root cause and solution.")
     
     torch.save({
         'trajectories': trajectories,
