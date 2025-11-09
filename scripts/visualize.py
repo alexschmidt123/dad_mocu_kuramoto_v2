@@ -84,12 +84,31 @@ if update_cnt is None:
 print(f"Using update_cnt={update_cnt}")
 
 # Verify data dimensions match
+# Check all methods and use the maximum length to ensure all steps are shown
+max_data_length = max(len(method_data[method]['mocu']) for method in available_methods)
+if max_data_length != update_cnt + 1:
+    print(f"Warning: Data has {max_data_length} values, expected {update_cnt + 1}")
+    print(f"  Some methods may have different lengths. Using max length: {max_data_length}")
+    # Use the maximum data length to ensure all steps are shown
+    update_cnt = max_data_length - 1
+    print(f"  Adjusted update_cnt to {update_cnt} (will show steps 0-{update_cnt})")
+    
+# Verify each method's data length
 for method in available_methods:
-    if len(method_data[method]['mocu']) != update_cnt + 1:
-        print(f"Warning: {method} MOCU data has {len(method_data[method]['mocu'])} values, expected {update_cnt + 1}")
-        print(f"  Adjusting update_cnt to match data...")
-        update_cnt = len(method_data[method]['mocu']) - 1
-        break
+    data_len = len(method_data[method]['mocu'])
+    if data_len != update_cnt + 1:
+        print(f"  Note: {method} has {data_len} values (expected {update_cnt + 1})")
+        # Pad or truncate to match expected length
+        if data_len < update_cnt + 1:
+            # Pad with last value if data is shorter
+            last_val = method_data[method]['mocu'][-1]
+            padding = np.full(update_cnt + 1 - data_len, last_val)
+            method_data[method]['mocu'] = np.concatenate([method_data[method]['mocu'], padding])
+            print(f"    Padded {method} data to {update_cnt + 1} values")
+        elif data_len > update_cnt + 1:
+            # Truncate if data is longer
+            method_data[method]['mocu'] = method_data[method]['mocu'][:update_cnt + 1]
+            print(f"    Truncated {method} data to {update_cnt + 1} values")
 
 # Plot MOCU curves
 x_ax = np.arange(0, update_cnt + 1, 1)
