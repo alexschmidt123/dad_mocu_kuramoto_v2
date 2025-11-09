@@ -36,8 +36,8 @@ NUM_SIMULATIONS=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "num_simulations
 [ -z "$K_MAX" ] && K_MAX=20480
 [ -z "$NUM_SIMULATIONS" ] && NUM_SIMULATIONS=10
 
-# Run ALL baseline methods (matching original paper)
-BASELINE_METHODS="iNN,NN,ODE,ENTROPY,RANDOM"
+# Run ALL baseline methods (matching original paper + regression_scorer)
+BASELINE_METHODS="iNN,NN,ODE,ENTROPY,RANDOM,REGRESSION_SCORER"
 
 RESULT_RUN_FOLDER="${PROJECT_ROOT}/results/${CONFIG_NAME}/${TIMESTAMP}/"
 mkdir -p "$RESULT_RUN_FOLDER"
