@@ -1,6 +1,6 @@
 #!/bin/bash
-# Step 3: Evaluate ALL baseline methods first (iNN, NN, ODE, ENTROPY, RANDOM)
-# This runs all original paper baselines BEFORE DAD training, regardless of config
+# Step 3: Evaluate baseline methods first
+# This runs baseline methods BEFORE DAD training, regardless of config
 # Uses PyCUDA for MOCU computation (matches original paper 2023 workflow)
 
 set -e
@@ -36,7 +36,7 @@ NUM_SIMULATIONS=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "num_simulations
 [ -z "$K_MAX" ] && K_MAX=20480
 [ -z "$NUM_SIMULATIONS" ] && NUM_SIMULATIONS=10
 
-# Run ALL baseline methods (matching original paper + regression_scorer)
+# Run baseline methods (matching original paper + regression_scorer)
 BASELINE_METHODS="iNN,NN,ODE,ENTROPY,RANDOM,REGRESSION_SCORER"
 
 RESULT_RUN_FOLDER="${PROJECT_ROOT}/results/${CONFIG_NAME}/${TIMESTAMP}/"
@@ -51,7 +51,7 @@ export EVAL_K_MAX="$K_MAX"
 export EVAL_NUM_SIMULATIONS="$NUM_SIMULATIONS"
 
 echo "Running baseline evaluation (Step 3/6)..."
-echo "  Methods: $BASELINE_METHODS (ALL original paper baselines)"
+echo "  Methods: $BASELINE_METHODS"
 echo "  N=$N, update_cnt=$UPDATE_CNT, it_idx=$IT_IDX, K_max=$K_MAX, num_simulations=$NUM_SIMULATIONS"
 echo "  Results: $RESULT_RUN_FOLDER"
 

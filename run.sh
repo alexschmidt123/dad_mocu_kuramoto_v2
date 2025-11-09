@@ -81,9 +81,9 @@ echo ""
 echo -e "${GREEN}[Step 2/6]${NC} Training MPNN predictor..."
 bash "${PROJECT_ROOT}/scripts/bash/step2_train_mpnn.sh" "$CONFIG_FILE" "$TRAIN_FILE"
 
-# Step 3: Evaluate ALL baseline methods first and visualize (uses PyCUDA for MOCU computation - original paper workflow)
+# Step 3: Evaluate baseline methods first and visualize (uses PyCUDA for MOCU computation - original paper workflow)
 echo ""
-echo -e "${GREEN}[Step 3/6]${NC} Running baseline evaluation and visualization (ALL original methods: iNN, NN, ODE, ENTROPY, RANDOM)..."
+echo -e "${GREEN}[Step 3/6]${NC} Running baseline evaluation and visualization..."
 bash "${PROJECT_ROOT}/scripts/bash/step3_evaluate_baselines.sh" "$CONFIG_FILE"
 
 # Step 4: Generate DAD training data and train DAD policy (if DAD is in methods list)
