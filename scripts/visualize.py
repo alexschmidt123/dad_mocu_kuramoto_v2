@@ -69,11 +69,15 @@ for method in available_methods:
         'mocu': mocu_mean,
         'time': time_mean
     }
-    
-    # Auto-detect update_cnt from data shape (number of iterations + 1 for initial)
-    if update_cnt_detected is None:
-        update_cnt_detected = len(mocu_mean) - 1
-        print(f"Auto-detected update_cnt={update_cnt_detected} from data shape")
+
+# Auto-detect update_cnt from maximum data length across all methods
+if update_cnt_detected is None:
+    if available_methods:
+        max_len = max(len(method_data[method]['mocu']) for method in available_methods)
+        update_cnt_detected = max_len - 1
+        print(f"Auto-detected update_cnt={update_cnt_detected} from data (max length={max_len} across all methods)")
+    else:
+        update_cnt_detected = None
 
 # Use provided update_cnt or auto-detected value
 update_cnt = args.update_cnt if args.update_cnt is not None else update_cnt_detected
@@ -81,7 +85,7 @@ if update_cnt is None:
     print("Error: Could not determine update_cnt. Please provide --update_cnt argument.")
     sys.exit(1)
 
-print(f"Using update_cnt={update_cnt}")
+print(f"Using update_cnt={update_cnt} (will show steps 0-{update_cnt}, total {update_cnt+1} steps)")
 
 # Verify data dimensions match
 # Check all methods and use the maximum length to ensure all steps are shown
@@ -147,9 +151,9 @@ plt.xlabel('Number of updates')
 plt.ylabel('MOCU')
 plt.grid(True)
 if args.baseline_only:
-    mocu_plot_path = os.path.join(resultFolder, f'MOCU_{N}_baselines_only.png')
+    mocu_plot_path = os.path.join(resultFolder, f'mocu_baseline_{N}.png')
 else:
-    mocu_plot_path = os.path.join(resultFolder, f'MOCU_{N}.png')
+    mocu_plot_path = os.path.join(resultFolder, f'mocu_all_{N}.png')
 plt.savefig(mocu_plot_path, dpi=300)
 plt.close()
 print(f"✓ Saved MOCU plot: {mocu_plot_path}")
@@ -193,9 +197,9 @@ plt.xticks(np.arange(0, update_cnt + 1, 1))
 plt.ylim(1, 10000)
 plt.grid(True)
 if args.baseline_only:
-    time_plot_path = os.path.join(resultFolder, f'timeComplexity_{N}_baselines_only.png')
+    time_plot_path = os.path.join(resultFolder, f'timecomplexity_baseline_{N}.png')
 else:
-    time_plot_path = os.path.join(resultFolder, f'timeComplexity_{N}.png')
+    time_plot_path = os.path.join(resultFolder, f'timecomplexity_all_{N}.png')
 fig.savefig(time_plot_path, dpi=300)
 plt.close(fig)
 print(f"✓ Saved time complexity plot: {time_plot_path}")
@@ -204,7 +208,7 @@ print(f"\n✓ Visualization complete!")
 print(f"  Methods plotted: {', '.join(available_methods)}")
 print(f"  Output folder: {resultFolder}")
 if args.baseline_only:
-    print(f"  Files: MOCU_{N}_baselines_only.png, timeComplexity_{N}_baselines_only.png")
+    print(f"  Files: mocu_baseline_{N}.png, timecomplexity_baseline_{N}.png")
 else:
-    print(f"  Files: MOCU_{N}.png, timeComplexity_{N}.png")
+    print(f"  Files: mocu_all_{N}.png, timecomplexity_all_{N}.png")
 

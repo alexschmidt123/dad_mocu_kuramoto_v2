@@ -336,6 +336,12 @@ if __name__ == '__main__':
                 method_pbar.write(f'  ✗ Error running {method_name}: {e}')
                 import traceback
                 traceback.print_exc()
+                # Print more details for debugging
+                if method_name == 'REGRESSION_SCORER':
+                    print(f"\n[ERROR] REGRESSION_SCORER failed. Common causes:")
+                    print(f"  1. MPNN model not found at: models/{os.getenv('MOCU_MODEL_NAME', f'cons{N}')}/model.pth")
+                    print(f"  2. Statistics file not found at: models/{os.getenv('MOCU_MODEL_NAME', f'cons{N}')}/statistics.pth")
+                    print(f"  3. Please ensure MPNN training (Step 2) completed successfully")
                 continue
         
         numberOfVaildSimulations += 1
