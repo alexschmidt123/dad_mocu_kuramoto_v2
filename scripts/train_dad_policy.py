@@ -589,12 +589,21 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Show diagnostic info including normalized statistics
             reward_mean = np.mean(all_rewards) if len(all_rewards) > 0 else 0.0
             reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
+            # Show advantage magnitude to diagnose if it's too small
+            adv_magnitude = abs(advantage)
             traj_pbar.set_postfix({
                 'loss': f'{current_loss:.4f}', 
                 'reward': f'{reward:.4f}',
                 'adv': f'{advantage:.4f}',
+                '|adv|': f'{adv_magnitude:.4f}',
                 'r_std': f'{reward_std:.4f}'
             })
+            
+            # Warn if advantage is too small (indicating baseline is canceling signal)
+            if len(all_rewards) > 50 and adv_magnitude < 0.01:
+                if not hasattr(train_reinforce, '_small_adv_warned'):
+                    traj_pbar.write(f"[WARNING] Advantage magnitude is very small ({adv_magnitude:.6f}) - baseline may be canceling learning signal")
+                    train_reinforce._small_adv_warned = True
         
         total_loss += current_loss
         total_reward += reward
@@ -845,6 +854,7 @@ def main():
         'model_state_dict': model.state_dict(),
         'config': {
             'N': N,
+            'K': K,  # Save K value for verification
             'hidden_dim': args.hidden_dim,
             'encoding_dim': args.encoding_dim
         },

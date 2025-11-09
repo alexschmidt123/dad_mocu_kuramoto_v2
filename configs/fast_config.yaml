@@ -32,7 +32,7 @@ training:
 # Experiment parameters (MINIMAL for quick verification)
 experiment:
   num_simulations: 1       # Single run only
-  update_count: 3          # Just 3 iterations
+  update_count: 4          # 4 iterations = 5 steps total (0,1,2,3,4)
   it_idx: 3                # Minimal iterations (matches original fast_config)
   K_max: 1024              # Match dataset K_max (matches original fast_config)
   methods:
@@ -45,7 +45,7 @@ experiment:
 # DAD policy training data generation
 dad_data:
   num_episodes: 100        # Number of trajectories to generate (MINIMAL for testing)
-  K: 4                     # Number of sequential experiments per trajectory
+  K: 5                     # Number of sequential experiments per trajectory
   use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended)
 
 # Paths (relative to project root)

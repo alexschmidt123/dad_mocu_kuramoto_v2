@@ -104,24 +104,29 @@ class RegressionScorer_Method(OEDMethod):
                 f"Please train MPNN predictor first (same as iNN/NN methods)."
             )
         
-        # Load model
-        checkpoint = torch.load(model_path, map_location=self.device)
-        self.model = MPNNPlusPredictor(
-            node_features=1,
-            edge_features=2,
-            hidden_dim=checkpoint.get('hidden_dim', 64),
-            num_layers=checkpoint.get('num_layers', 3)
-        )
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.model.to(self.device)
+        # Load model (same approach as iNN/NN methods)
+        # MPNNPlusPredictor uses 'dim' parameter, not node_features/edge_features
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        
+        # Infer dim from checkpoint (same as iNN/NN)
+        state_dict = checkpoint if isinstance(checkpoint, dict) else (checkpoint.state_dict() if hasattr(checkpoint, 'state_dict') else checkpoint)
+        
+        if 'lin0.weight' in state_dict:
+            saved_dim = state_dict['lin0.weight'].shape[0]
+        else:
+            # Default dim=32 (matching original paper implementation)
+            saved_dim = 32
+        
+        self.model = MPNNPlusPredictor(dim=saved_dim).to(self.device)
+        self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False), strict=True)
         self.model.eval()
         
         # Load statistics
-        stats = torch.load(stats_path, map_location=self.device)
-        self.mean = stats['mean'].item()
-        self.std = stats['std'].item()
+        stats = torch.load(stats_path, map_location=self.device, weights_only=False)
+        self.mean = stats['mean'] if isinstance(stats['mean'], (int, float)) else stats['mean'].item()
+        self.std = stats['std'] if isinstance(stats['std'], (int, float)) else stats['std'].item()
         
-        print(f"[RegressionScorer] Loaded MPNN model: {self.model_name}")
+        print(f"[RegressionScorer] Loaded MPNN model: {self.model_name} (dim={saved_dim})")
     
     def _score_design(self, w, a_lower_bounds, a_upper_bounds, i, j, criticalK):
         """
