@@ -145,11 +145,12 @@ if 'DAD' in available_methods:
     legend_labels.append('DAD (Proposed)')
 
 plt.plot(*plot_args)
-plt.legend(legend_labels)
+plt.legend(legend_labels, loc='center left', bbox_to_anchor=(1, 0.5))
 plt.xticks(np.arange(0, update_cnt + 1, 1)) 
 plt.xlabel('Number of updates')
 plt.ylabel('MOCU')
 plt.grid(True)
+plt.tight_layout()
 if args.baseline_only:
     mocu_plot_path = os.path.join(resultFolder, f'mocu_baseline_n={N}.png')
 else:
@@ -189,13 +190,14 @@ if 'DAD' in available_methods:
     legend_labels.append('DAD (Proposed)')
 
 plt.plot(*plot_args)
-plt.legend(legend_labels)
+plt.legend(legend_labels, loc='center left', bbox_to_anchor=(1, 0.5))
 plt.yscale('log')
 plt.xlabel('Number of updates')
 plt.ylabel('Cumulative time complexity (in seconds)')
 plt.xticks(np.arange(0, update_cnt + 1, 1)) 
-plt.ylim(1, 10000)
+plt.ylim(1e-7, 1e2)
 plt.grid(True)
+plt.tight_layout()
 if args.baseline_only:
     time_plot_path = os.path.join(resultFolder, f'timecomplexity_baseline_n={N}.png')
 else:

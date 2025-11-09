@@ -248,12 +248,80 @@ class RegressionScorer_Method(OEDMethod):
             print("[RegressionScorer] Warning: No available experiments left!")
             return -1, -1
         
-        # Score all available designs
+        # Score all available designs (batch for efficiency)
+        # Instead of scoring individually, batch all pairs together like NN/iNN
+        # Batch all available pairs for efficient prediction
+        data_list = []
+        P_sync_list = []
+        pair_indices = []  # Track which pair each prediction corresponds to
+        
+        x = torch.from_numpy(w.astype(np.float32)).unsqueeze(-1).to(self.device)  # [N, 1]
+        edge_index = get_edge_index(self.N).to(self.device)
+        
+        # Pre-allocate arrays to avoid repeated allocations
+        num_pairs = len(available_pairs)
+        
+        for idx, (i, j) in enumerate(available_pairs):
+            # Compute f_inv (critical coupling for this pair)
+            w_i = w[i]
+            w_j = w[j]
+            f_inv = 0.5 * np.abs(w_i - w_j)
+            
+            # Current bounds for this pair
+            a_lower_ij = a_lower_bounds[i, j]
+            a_upper_ij = a_upper_bounds[i, j]
+            
+            # Compute a_tilde
+            a_tilde = min(max(f_inv, a_lower_ij), a_upper_ij)
+            
+            # Probability of sync
+            P_sync = (a_upper_ij - a_tilde) / (a_upper_ij - a_lower_ij + 1e-10)
+            P_sync_list.append(P_sync)
+            pair_indices.append((i, j))
+            
+            # Scenario 1: Synchronized observation
+            # Use np.copy() explicitly for clarity (slightly faster than .copy())
+            a_lower_syn = np.copy(a_lower_bounds)
+            a_upper_syn = np.copy(a_upper_bounds)
+            a_lower_syn[i, j] = a_tilde
+            a_lower_syn[j, i] = a_tilde
+            
+            edge_attr_syn = get_edge_attr_from_bounds(a_lower_syn, a_upper_syn, self.N).to(self.device)
+            data_syn = Data(x=x, edge_index=edge_index, edge_attr=edge_attr_syn)
+            data_list.append(data_syn)
+            
+            # Scenario 2: Non-synchronized observation
+            a_lower_nonsyn = np.copy(a_lower_bounds)
+            a_upper_nonsyn = np.copy(a_upper_bounds)
+            a_upper_nonsyn[i, j] = a_tilde
+            a_upper_nonsyn[j, i] = a_tilde
+            
+            edge_attr_nonsyn = get_edge_attr_from_bounds(a_lower_nonsyn, a_upper_nonsyn, self.N).to(self.device)
+            data_nonsyn = Data(x=x, edge_index=edge_index, edge_attr=edge_attr_nonsyn)
+            data_list.append(data_nonsyn)
+        
+        # Batch prediction (much faster than individual predictions)
+        dataloader = DataLoader(data_list, batch_size=128, shuffle=False)
+        predictions = []
+        
+        with torch.no_grad():
+            for batch_data in dataloader:
+                batch_data = batch_data.to(self.device)
+                pred = self.model(batch_data).cpu().numpy()
+                predictions.extend(pred)
+        
+        predictions = np.array(predictions)
+        predictions = predictions * self.std + self.mean  # Denormalize
+        
+        # Compute expected MOCU for each pair
         scores = []
-        for i, j in available_pairs:
-            # Compute expected MOCU after applying this design
-            score = self._score_design(w, a_lower_bounds, a_upper_bounds, i, j, criticalK)
-            scores.append(score)
+        for idx, (i, j) in enumerate(pair_indices):
+            mocu_sync = predictions[idx * 2]
+            mocu_nonsync = predictions[idx * 2 + 1]
+            P_sync = P_sync_list[idx]
+            P_nonsync = 1.0 - P_sync
+            expected_mocu = P_sync * mocu_sync + P_nonsync * mocu_nonsync
+            scores.append(expected_mocu)
         
         # Select design with minimum predicted MOCU (greedy)
         best_idx = np.argmin(scores)

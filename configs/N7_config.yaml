@@ -39,10 +39,10 @@ experiment:
     - "iNN"       # PyTorch methods AFTER
     - "NN"
     - "DAD"
-    
-    # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
-    # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)
-    dad_method: "reinforce"  # REINFORCE directly optimizes terminal MOCU
+  
+  # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
+  # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)
+  dad_method: "reinforce"  # REINFORCE directly optimizes terminal MOCU
 
 # DAD policy training data generation
 dad_data:
