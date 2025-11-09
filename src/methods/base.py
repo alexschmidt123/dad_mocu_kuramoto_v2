@@ -421,6 +421,10 @@ class OEDMethod(ABC):
                         )
                     MOCUCurve[iteration + 1] = np.mean(it_temp_val)
                     mocu_computed = True
+                    # Log successful PyCUDA usage (only once per run)
+                    if not hasattr(self, '_dad_pycuda_success_logged'):
+                        print(f"[DAD] Using PyCUDA for MOCU tracking (matching baselines)")
+                        self._dad_pycuda_success_logged = True
                 except Exception as e:
                     # PyCUDA failed, try torchdiffeq as fallback
                     if not hasattr(self, '_dad_pycuda_fallback_warned'):
