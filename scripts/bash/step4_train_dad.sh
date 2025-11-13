@@ -37,8 +37,15 @@ if [ -z "$MODEL_FOLDER" ] || [ ! -d "$MODEL_FOLDER" ]; then
     exit 1
 fi
 
+# Get K value for model naming
+K=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  K:" | awk '{print $2}' || echo "4")
+if [ -z "$K" ]; then
+    K=4
+fi
+
 # Check if DAD model already exists - skip training if so
-DAD_MODEL_FILE="${MODEL_FOLDER}dad_policy_N${N}.pth"
+# Model name includes K: dad_policy_N${N}_K${K}.pth
+DAD_MODEL_FILE="${MODEL_FOLDER}dad_policy_N${N}_K${K}.pth"
 if [ -f "$DAD_MODEL_FILE" ]; then
     echo "✓ DAD model already exists: $DAD_MODEL_FILE"
     echo "✓ Skipping DAD training (model detected)"
@@ -58,7 +65,10 @@ if [[ "$ABS_CONFIG_FILE" != /* ]]; then
 fi
 
 NUM_EPISODES=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  num_episodes:" | awk '{print $2}' || echo "1000")
-K=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  K:" | awk '{print $2}' || echo "4")
+# K already read above, but ensure it's set
+if [ -z "$K" ]; then
+    K=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  K:" | awk '{print $2}' || echo "4")
+fi
 USE_PRECOMPUTED_MOCU=$(grep -A 3 "^dad_data:" "$ABS_CONFIG_FILE" | grep "  use_precomputed_mocu:" | awk '{print $2}' || echo "true")
 
 # Validate values are not empty
@@ -180,7 +190,7 @@ fi
 python3 train_dad_policy.py \
     --data-path "$ABS_DAD_TRAJ_FILE" \
     --method "$DAD_METHOD" \
-    --name "dad_policy_N${N}" \
+    --name "dad_policy_N${N}_K${K}" \
     --epochs 100 \
     --batch-size 64 \
     --lr 0.0001 \
@@ -194,7 +204,7 @@ echo "✓ DAD policy trained: ${DAD_MODEL_FILE}"
 echo "✓ DAD model trained for K=$K design steps ($((K+1)) total steps: 0-$K)"
 
 # Prefer best checkpoint if it exists (better performance)
-DAD_BEST_MODEL_FILE="${MODEL_FOLDER}dad_policy_N${N}_best.pth"
+DAD_BEST_MODEL_FILE="${MODEL_FOLDER}dad_policy_N${N}_K${K}_best.pth"
 if [ -f "$DAD_BEST_MODEL_FILE" ]; then
     echo "✓ Using best checkpoint: $DAD_BEST_MODEL_FILE"
     echo "$DAD_BEST_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt

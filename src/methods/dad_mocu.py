@@ -64,22 +64,32 @@ class DAD_MOCU_Method(OEDMethod):
     def _load_policy(self, policy_model_path):
         """Load trained DAD policy network."""
         if policy_model_path is None:
-            # Try to find policy in new structure: models/{config_name}/dad_policy_N{N}.pth
+            # Try to find policy in new structure: models/{config_name}/dad_policy_N{N}_K{K}.pth or dad_policy_N{N}.pth
             # Search in all config folders
             models_root = PROJECT_ROOT / 'models'
             found_paths = []
             
             if models_root.exists():
-                # Search for dad_policy_N{N}.pth in all config folders
+                # Search for both patterns: with K and without K
                 for config_dir in models_root.iterdir():
                     if config_dir.is_dir():
+                        # Try pattern with K: dad_policy_N{N}_K{K}.pth
+                        for k_file in config_dir.glob(f'dad_policy_N{self.N}_K*.pth'):
+                            # Prefer best model if exists, otherwise regular model
+                            if '_best.pth' in k_file.name:
+                                found_paths.append((k_file, k_file.stat().st_mtime, True))
+                            else:
+                                found_paths.append((k_file, k_file.stat().st_mtime, False))
+                        
+                        # Try pattern without K: dad_policy_N{N}.pth (backward compatibility)
                         candidate = config_dir / f'dad_policy_N{self.N}.pth'
                         if candidate.exists():
-                            found_paths.append((candidate, candidate.stat().st_mtime))
+                            found_paths.append((candidate, candidate.stat().st_mtime, False))
             
-            # Use most recently modified if found
+            # Use most recently modified if found (prefer best models)
             if found_paths:
-                found_paths.sort(key=lambda x: x[1], reverse=True)
+                # Sort: best models first, then by modification time
+                found_paths.sort(key=lambda x: (not x[2], -x[1]))
                 policy_model_path = found_paths[0][0]
                 print(f"[DAD-MOCU] Found policy at: {policy_model_path}")
             else:
@@ -89,10 +99,11 @@ class DAD_MOCU_Method(OEDMethod):
                 if not policy_model_path.exists():
                     raise FileNotFoundError(
                         f"Policy model not found. Searched in:\n"
-                        f"  - models/*/dad_policy_N{self.N}.pth (new structure)\n"
+                        f"  - models/*/dad_policy_N{self.N}_K*.pth (with K)\n"
+                        f"  - models/*/dad_policy_N{self.N}.pth (without K)\n"
                         f"  - models/dad_policy_N{self.N}.pth (old structure)\n"
                         f"Please train a DAD policy first using:\n"
-                        f"  python scripts/train_dad_policy.py --data-path <data> --name dad_policy_N{self.N}"
+                        f"  python scripts/train_dad_policy.py --data-path <data> --name dad_policy_N{self.N}_K<K>"
                     )
         
         print(f"[DAD-MOCU] Loading policy from: {policy_model_path}")
