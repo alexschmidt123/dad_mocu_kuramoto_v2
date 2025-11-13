@@ -29,7 +29,7 @@ training:
 # Experiment parameters
 experiment:
   num_simulations: 10  # Number of random systems to test
-  update_count: 10     # Sequential experiments per system
+  update_count: 4      # Sequential experiments per system (4 design steps = 5 total steps 0-4, since initial MOCU is fixed)
   it_idx: 10           # MOCU averaging iterations
   K_max: 20480
   methods:
@@ -46,8 +46,10 @@ experiment:
 
 # DAD policy training data generation
 dad_data:
-  num_episodes: 1000       # Number of trajectories to generate (recommended minimum for REINFORCE)
-  K: 4                     # Number of sequential experiments per trajectory
+  num_episodes: 10000      # Number of trajectories to generate (increased from 1000 to match iDAD data requirements)
+                           # iDAD uses ~205M samples (on-the-fly), we use 10K pre-generated trajectories
+                           # Can increase further if needed (50K-100K for better performance)
+  K: 4                     # Number of sequential experiments per trajectory (4 design steps, aligns with experiment.update_count)
   use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended, avoids CUDA conflicts)
 
 # Paths (relative to project root)

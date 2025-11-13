@@ -214,11 +214,15 @@ def train_imitation(model, dataloader, optimizer, device, N):
     return avg_loss, accuracy
 
 
-def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max=20480, 
+def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max=20480, 
                     use_baseline=True, mocu_model=None, mocu_mean=None, mocu_std=None, use_predicted_mocu=False,
-                    epoch_num=None):
+                    epoch_num=None, entropy_coef=0.01, critic=None, critic_optimizer=None):
     """
     Train using REINFORCE policy gradient with MOCU DIRECTLY as the loss.
+    
+    Args:
+        entropy_coef: Entropy regularization coefficient (default 0.01)
+                     Prevents policy from becoming too deterministic
     """
     from scripts.generate_dad_data import update_bounds
     
@@ -290,6 +294,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             raise ValueError("REINFORCE requires 'a_true' in trajectories")
         
         log_probs = []
+        action_probs_list = []  # Store action_probs for entropy computation
         observed_pairs = []
         observations_list = []
         
@@ -320,6 +325,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             
             # Policy forward pass
             action_logits, action_probs = model(state_data, history_tensor, available_mask_tensor)
+            
+            # Store action_probs for entropy computation (detach to avoid gradient issues)
+            action_probs_list.append(action_probs.squeeze(0).detach())  # [num_actions]
             
             dist = torch.distributions.Categorical(probs=action_probs)
             action_idx = dist.sample()
@@ -376,12 +384,34 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         reward_list.append(reward)
         all_rewards.append(reward)
         
-        # Compute advantage using reward normalization (z-score) to prevent baseline from canceling signal
-        # This is more robust than adaptive baseline when reward variance is low
-        reward_mean = np.mean(all_rewards) if len(all_rewards) > 0 else 0.0
-        reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
+        # === CRITIC BASELINE (iDAD-inspired variance reduction) ===
+        critic_baseline = None
+        if critic is not None:
+            # Estimate MOCU using critic network
+            final_state_data = create_state_data(w, a_lower, a_upper, device=device)
+            if len(observed_pairs) > 0:
+                history_list = [(observed_pairs[k][0], observed_pairs[k][1], observations_list[k]) 
+                              for k in range(len(observed_pairs))]
+                history_tensor = torch.tensor([history_list], dtype=torch.long, device=device)
+            else:
+                history_tensor = None
+            
+            critic.train()  # Ensure critic is in train mode
+            with torch.no_grad():
+                mocu_estimate = critic(final_state_data, history_tensor)  # [1]
+                critic_baseline = -mocu_estimate.item()  # Negative because reward = -MOCU
         
-        if len(all_rewards) >= 50:
+        # Compute advantage using critic baseline (if available) or reward normalization
+        if critic_baseline is not None:
+            # Use critic as baseline (iDAD approach - reduces variance)
+            advantage = float(reward - critic_baseline)
+            # Clip to prevent extreme values
+            advantage = np.clip(advantage, -5.0, 5.0)
+        elif len(all_rewards) >= 50:
+            # Fallback to z-score normalization if no critic
+            reward_mean = np.mean(all_rewards) if len(all_rewards) > 0 else 0.0
+            reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
+            
             if reward_std > 1e-3:  # Sufficient variance for z-score normalization
                 # Z-score normalization: (reward - mean) / std
                 # This ensures advantages have consistent scale regardless of reward distribution
@@ -424,6 +454,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         # CRITICAL: Validate all log_probs tensors before building loss computation graph
         # This prevents invalid memory access during loss construction
         valid_log_probs = []
+        valid_action_probs = []  # Store action_probs for entropy computation
         for idx, log_prob in enumerate(log_probs):
             try:
                 # Validate tensor is valid and on correct device
@@ -434,6 +465,14 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                 # Verify tensor data is valid (not NaN or Inf)
                 assert not (torch.isnan(log_prob) or torch.isinf(log_prob)), f"log_prob {idx} is NaN/Inf"
                 valid_log_probs.append(log_prob)
+                # Store corresponding action_probs for entropy (from the forward pass)
+                # Note: action_probs_list contains detached tensors, but we need gradients for entropy
+                # So we'll recompute entropy from the policy network during loss computation
+                if idx < len(action_probs_list):
+                    # Use stored action_probs (will recompute with gradients in loss computation)
+                    valid_action_probs.append(action_probs_list[idx])
+                else:
+                    raise RuntimeError(f"Missing action_probs for step {idx}")
             except (AssertionError, RuntimeError) as e:
                 print(f"[REINFORCE] ERROR: Invalid log_prob at step {idx}: {e}")
                 raise RuntimeError(f"Invalid log_prob tensor at step {idx}: {e}") from e
@@ -444,9 +483,10 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         # Build loss computation graph (only involves policy network, not MPNN)
         # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
         # Use validated log_probs to prevent memory access errors
-        # Policy is objective-based: optimize MOCU directly, not entropy
+        # REINFORCE loss with entropy regularization to prevent policy collapse
         policy_loss = []
-        for idx, (log_prob, advantage_val) in enumerate(zip(valid_log_probs, returns)):
+        entropy_loss = []
+        for idx, (log_prob, advantage_val, action_probs_step) in enumerate(zip(valid_log_probs, returns, valid_action_probs)):
             try:
                 # Validate advantage_val is a valid Python float
                 assert isinstance(advantage_val, (int, float)), f"advantage_val {idx} must be numeric"
@@ -468,6 +508,16 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                     f"loss_component {idx} is NaN/Inf"
                 
                 policy_loss.append(loss_component)
+                
+                # Compute entropy for this step (encourages exploration, prevents policy collapse)
+                # Entropy = -sum(p * log(p)) where p is action probability distribution
+                # Higher entropy = more exploration, lower entropy = more deterministic
+                # Note: action_probs_step is detached, but we need gradients for entropy regularization
+                # So we'll use the action_probs from the policy network's current state
+                # For now, use detached version (entropy regularization doesn't need gradients through action_probs)
+                # The gradient comes from the policy_loss term, entropy just adds a bonus
+                entropy = -torch.sum(action_probs_step * torch.log(action_probs_step + 1e-8))
+                entropy_loss.append(entropy)
             except (AssertionError, RuntimeError) as e:
                 print(f"[REINFORCE] ERROR: Failed to build loss component at step {idx}: {e}")
                 raise RuntimeError(f"Failed to build loss component at step {idx}: {e}") from e
@@ -480,9 +530,20 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
         try:
             # ALTERNATIVE APPROACH: Accumulate loss directly instead of stacking
             # This avoids potential issues with torch.stack() and creates a simpler graph
+            # REINFORCE loss: sum of (-log_prob * advantage) for all steps
             loss = policy_loss[0]
             for component in policy_loss[1:]:
                 loss = loss + component
+            
+            # Add entropy regularization to prevent policy from becoming too deterministic
+            # Entropy bonus encourages exploration: loss = policy_loss - entropy_coef * entropy
+            # (negative because we want to maximize entropy, but loss is minimized)
+            if entropy_coef > 0 and len(entropy_loss) > 0:
+                total_entropy = entropy_loss[0]
+                for ent in entropy_loss[1:]:
+                    total_entropy = total_entropy + ent
+                # Subtract entropy (we want to maximize it, so subtract from loss)
+                loss = loss - entropy_coef * total_entropy
             
             # Validate after accumulation
             assert isinstance(loss, torch.Tensor), "Loss is not a tensor after accumulation"
@@ -588,8 +649,33 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                     print("[REINFORCE] Could not query CUDA state")
             raise
         
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # Gradient clipping: prevent exploding gradients (increased from 1.0 to 2.0 for more stable training)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
         optimizer.step()
+        
+        # === TRAIN CRITIC (iDAD-inspired) ===
+        if critic is not None and critic_optimizer is not None:
+            critic_optimizer.zero_grad()
+            
+            # Estimate MOCU using critic
+            final_state_data = create_state_data(w, a_lower, a_upper, device=device)
+            if len(observed_pairs) > 0:
+                history_list = [(observed_pairs[k][0], observed_pairs[k][1], observations_list[k]) 
+                              for k in range(len(observed_pairs))]
+                history_tensor = torch.tensor([history_list], dtype=torch.long, device=device)
+            else:
+                history_tensor = None
+            
+            mocu_estimate = critic(final_state_data, history_tensor)  # [1]
+            target_mocu = torch.tensor(terminal_MOCU, dtype=torch.float32, device=device)
+            
+            # Critic loss: MSE between predicted and actual MOCU
+            critic_loss = F.mse_loss(mocu_estimate, target_mocu)
+            critic_loss.backward()
+            
+            # Gradient clipping for critic
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=2.0)
+            critic_optimizer.step()
         
         # REMOVED: torch.cuda.synchronize() after optimizer step
         # PyTorch handles CUDA synchronization automatically
@@ -607,13 +693,17 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
             # Calculate average log_prob magnitude for diagnostics
             avg_log_prob = np.mean([abs(lp.item()) for lp in log_probs]) if log_probs else 0.0
             
+            # Calculate average entropy for diagnostics (prevent policy collapse)
+            avg_entropy = np.mean([ent.item() for ent in entropy_loss]) if entropy_loss else 0.0
+            
             traj_pbar.set_postfix({
                 'loss': f'{current_loss:.4f}', 
                 'reward': f'{reward:.4f}',
                 'adv': f'{advantage:.4f}',
                 '|adv|': f'{adv_magnitude:.4f}',
                 'r_std': f'{reward_std:.6f}',
-                '|log_p|': f'{avg_log_prob:.4f}'
+                '|log_p|': f'{avg_log_prob:.4f}',
+                'entropy': f'{avg_entropy:.4f}'
             })
             
             # Diagnostic warnings
@@ -634,6 +724,20 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.99, K_max
                     if not hasattr(train_reinforce, '_small_logp_warned'):
                         traj_pbar.write(f"[WARNING] Log probabilities are very small ({avg_log_prob:.8f}) - policy may be too deterministic")
                         train_reinforce._small_logp_warned = True
+                
+                # Warn if loss is approaching zero (no learning signal)
+                if abs(current_loss) < 0.001:
+                    if not hasattr(train_reinforce, '_zero_loss_warned'):
+                        traj_pbar.write(f"[WARNING] Loss is near zero ({current_loss:.6f}) - policy may have stopped learning!")
+                        traj_pbar.write(f"  This indicates no gradient signal. Check entropy ({avg_entropy:.6f}) and advantages.")
+                        train_reinforce._zero_loss_warned = True
+                
+                # Warn if entropy is too low (policy too deterministic)
+                if avg_entropy < 0.01 and len(entropy_loss) > 0:
+                    if not hasattr(train_reinforce, '_low_entropy_warned'):
+                        traj_pbar.write(f"[WARNING] Entropy is very low ({avg_entropy:.6f}) - policy is too deterministic!")
+                        traj_pbar.write(f"  Consider increasing entropy_coef (current: {entropy_coef})")
+                        train_reinforce._low_entropy_warned = True
         
         total_loss += current_loss
         total_reward += reward
@@ -652,14 +756,18 @@ def main():
                        help='Training method: "reinforce" (RL, uses MOCU directly) or "imitation" (behavior cloning)')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--hidden-dim', type=int, default=64, help='Hidden dimension')
-    parser.add_argument('--encoding-dim', type=int, default=32, help='Encoding dimension')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate (default: 1e-4, matching original DAD)')
+    parser.add_argument('--hidden-dim', type=int, default=256, help='Hidden dimension (default: 256, matching original DAD)')
+    parser.add_argument('--encoding-dim', type=int, default=16, help='Encoding dimension (default: 16, matching original DAD)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
     parser.add_argument('--output-dir', type=str, default='../models/', help='Output directory')
     parser.add_argument('--name', type=str, default='dad_policy', help='Model name')
     parser.add_argument('--use-predicted-mocu', action='store_true',
                        help='Use MPNN predictor for fast MOCU estimation (recommended). Requires trained MPNN model.')
+    parser.add_argument('--use-critic', action='store_true',
+                       help='Use critic network for variance reduction (iDAD-inspired). Recommended for implicit models.')
+    parser.add_argument('--critic-lr', type=float, default=None,
+                       help='Learning rate for critic (default: same as policy lr)')
     args = parser.parse_args()
     
     # Load data
@@ -671,7 +779,7 @@ def main():
     K = config['K']
     
     print(f"Loaded {len(trajectories)} trajectories")
-    print(f"System: N={N}, K={K}")
+    print(f"System: N={N}, K={K} design steps ({K+1} total steps: 0-{K})")
     
     # Create dataset and dataloader
     if args.method == 'imitation':
@@ -698,8 +806,128 @@ def main():
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Optimizer
+    # Load MPNN predictor for critic (if using critic)
+    mpnn_model = None
+    mpnn_mean = None
+    mpnn_std = None
+    if args.use_critic:
+        try:
+            from src.models.predictors.predictor_utils import load_mpnn_predictor
+            import os
+            from pathlib import Path
+            
+            # Get model name from environment variable, config, or auto-detect
+            model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name')
+            
+            # Auto-detect from output_dir if not provided
+            if not model_name and args.output_dir:
+                output_path = Path(args.output_dir).resolve()
+                parts = output_path.parts
+                try:
+                    models_idx = list(parts).index('models')
+                    if models_idx + 1 < len(parts):
+                        model_name = parts[models_idx + 1]
+                        print(f"[Critic] Auto-detected MPNN model name: {model_name}")
+                except (ValueError, IndexError):
+                    pass
+            
+            # Last resort: try default name format
+            if not model_name:
+                model_name = f'cons{N}'
+                print(f"[Critic] Using default MPNN model name: {model_name}")
+            
+            print(f"[Critic] Loading MPNN predictor: {model_name}")
+            mpnn_model, mpnn_mean, mpnn_std = load_mpnn_predictor(model_name=model_name, device=str(device))
+            mpnn_model.eval()
+            mpnn_model = mpnn_model.to(device)
+            print(f"[Critic] Successfully loaded MPNN predictor: {model_name}")
+        except Exception as e:
+            print(f"[Critic] Warning: Could not load MPNN predictor: {e}")
+            print(f"[Critic] Critic will work without MPNN (less accurate baseline)")
+            mpnn_model = None
+            mpnn_mean = None
+            mpnn_std = None
+    
+    # Create critic network (iDAD-inspired for variance reduction)
+    # Enhanced with pre-trained MPNN predictor for better MOCU estimation
+    critic = None
+    critic_optimizer = None
+    if args.use_critic:
+        from src.models.critics import MOCUCritic
+        critic = MOCUCritic(
+            N=N,
+            hidden_dim=args.hidden_dim,
+            encoding_dim=args.encoding_dim,
+            use_set_equivariant=False,  # Use LSTM encoder (order-dependent, necessary when order matters)
+            mpnn_model=mpnn_model,  # Pre-trained MPNN model (frozen)
+            mpnn_mean=mpnn_mean,  # Normalization mean
+            mpnn_std=mpnn_std  # Normalization std
+        )
+        critic = critic.to(device)
+        print(f"Critic parameters: {sum(p.numel() for p in critic.parameters()):,}")
+        
+        critic_lr = args.critic_lr if args.critic_lr is not None else args.lr
+        critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
+        print(f"Using critic network for variance reduction (iDAD-inspired)")
+        print(f"  Critic LR: {critic_lr}")
+        if mpnn_model is not None:
+            print(f"  Pre-trained MPNN: Enabled (using existing trained model)")
+        else:
+            print(f"  Pre-trained MPNN: Not available (critic will use fallback)")
+    
+    # Optimizer with learning rate scheduling
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    
+    # Learning rate scheduler: reduce LR when loss plateaus
+    # This helps prevent overfitting and stabilizes training
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=10, 
+        verbose=True, min_lr=1e-6
+    )
+    
+    # Critic scheduler (if using critic)
+    critic_scheduler = None
+    if critic is not None:
+        critic_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            critic_optimizer, mode='min', factor=0.5, patience=10,
+            verbose=True, min_lr=1e-6
+        )
+    
+    # Early stopping: stop if no improvement for N epochs
+    early_stop_patience = 20  # Stop if no improvement for 20 epochs
+    early_stop_counter = 0
+    
+    # Prepare output directory and best-checkpoint tracking
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / f'{args.name}.pth'
+    best_model_path = output_dir / f'{args.name}_best.pth'
+    best_loss = float('inf')
+    best_epoch = -1
+
+    def build_checkpoint_dict():
+        save_dict = {
+            'model_state_dict': model.state_dict(),
+            'config': {
+                'N': N,
+                'K': K,
+                'hidden_dim': args.hidden_dim,
+                'encoding_dim': args.encoding_dim
+            },
+            'train_config': {
+                'method': args.method,
+                'epochs': args.epochs,
+                'lr': args.lr,
+                'batch_size': args.batch_size,
+                'use_critic': args.use_critic
+            },
+            'train_losses': train_losses.copy()
+        }
+        if args.method == 'imitation' and train_accs:
+            save_dict['train_accs'] = train_accs.copy()
+        if critic is not None:
+            save_dict['critic_state_dict'] = critic.state_dict()
+        return save_dict
     
     # Training loop
     print("\n" + "=" * 80)
@@ -718,6 +946,12 @@ def main():
             loss, acc = train_imitation(model, dataloader, optimizer, device, N)
             train_losses.append(loss)
             train_accs.append(acc)
+            current_loss = train_losses[-1]
+            if current_loss < best_loss:
+                best_loss = current_loss
+                best_epoch = epoch
+                torch.save(build_checkpoint_dict(), best_model_path)
+                print(f"[Checkpoint] Saved best model (epoch {epoch + 1}, loss {current_loss:.6f}) -> {best_model_path}")
             
             epoch_pbar.set_postfix({'loss': f'{loss:.4f}', 'acc': f'{acc:.4f}', 
                                    'time': f'{time.time()-start_time:.1f}s'})
@@ -868,41 +1102,60 @@ def main():
                 mocu_mean=mocu_mean,
                 mocu_std=mocu_std,
                 use_predicted_mocu=use_predicted_mocu,
-                epoch_num=epoch
+                epoch_num=epoch,
+                entropy_coef=0.05,  # Increased to prevent policy collapse (was 0.02, loss collapsed to 0)
+                critic=critic,
+                critic_optimizer=critic_optimizer
             )
             train_losses.append(loss)
+            current_loss = train_losses[-1]
+            
+            # Warn if loss is approaching zero (policy collapse)
+            if abs(current_loss) < 0.001:
+                if not hasattr(main, '_zero_loss_epoch_warned'):
+                    print(f"\n⚠️  [EPOCH {epoch + 1}] WARNING: Loss is near zero ({current_loss:.6f})!")
+                    print(f"   This indicates policy collapse - no learning signal.")
+                    print(f"   The model may be too deterministic or advantages are zero.")
+                    print(f"   Consider: increasing entropy_coef, checking critic, or reducing learning rate.")
+                    main._zero_loss_epoch_warned = True
+            
+            # For REINFORCE: more negative loss is better, so we want to minimize (make more negative)
+            # best_loss should be the most negative (best) loss
+            if current_loss < best_loss:
+                best_loss = current_loss
+                best_epoch = epoch
+                torch.save(build_checkpoint_dict(), best_model_path)
+                print(f"[Checkpoint] Saved best model (epoch {epoch + 1}, loss {current_loss:.6f}) -> {best_model_path}")
             
             epoch_pbar.set_postfix({'loss': f'{loss:.4f}', 'reward': f'{reward:.4f}', 
                                    'time': f'{time.time()-start_time:.1f}s'})
+        
+        # Update learning rate scheduler
+        if args.method == 'reinforce':
+            scheduler.step(loss)  # Reduce LR if loss plateaus
+            if critic_scheduler is not None:
+                critic_scheduler.step(loss)  # Also update critic LR
+        
+        # Early stopping check
+        if loss < best_loss:
+            early_stop_counter = 0  # Reset counter on improvement
+        else:
+            early_stop_counter += 1
+        
+        # Stop early if no improvement for patience epochs
+        if early_stop_counter >= early_stop_patience:
+            print(f"\n⚠ Early stopping: No improvement for {early_stop_patience} epochs")
+            print(f"   Best loss was {best_loss:.6f} at epoch {best_epoch + 1}")
+            break
     
-    # Save model
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    model_path = output_dir / f'{args.name}.pth'
-    save_dict = {
-        'model_state_dict': model.state_dict(),
-        'config': {
-            'N': N,
-            'K': K,  # Save K value for verification
-            'hidden_dim': args.hidden_dim,
-            'encoding_dim': args.encoding_dim
-        },
-        'train_config': {
-            'method': args.method,
-            'epochs': args.epochs,
-            'lr': args.lr,
-            'batch_size': args.batch_size
-        },
-        'train_losses': train_losses  # Save loss history for analysis
-    }
-    
-    if args.method == 'imitation' and train_accs:
-        save_dict['train_accs'] = train_accs
-    
+    # Save model (output_dir already defined above)
+    save_dict = build_checkpoint_dict()
     torch.save(save_dict, model_path)
     
     print(f"\n✓ Model saved to: {model_path}")
+    if best_epoch >= 0:
+        print(f"✓ Best model saved to: {best_model_path} (epoch {best_epoch + 1}, loss {best_loss:.6f})")
+    print(f"✓ DAD model trained for K={K} design steps ({K+1} total steps: 0-{K})")
     
     # Print training summary
     if train_losses:
@@ -912,12 +1165,26 @@ def main():
         print(f"Loss change: {train_losses[-1] - train_losses[0]:.6f}")
         print(f"Best loss: {min(train_losses):.6f} (epoch {train_losses.index(min(train_losses))+1})")
         
+        # Check for training issues
         if abs(train_losses[-1] - train_losses[0]) < 0.001:
             print("\n⚠️  WARNING: Loss barely changed - training may not be effective!")
             print("   Consider:")
             print("   - Increasing learning rate (try --lr 0.01)")
             print("   - Using more trajectories (1000+ instead of 100)")
             print("   - Checking if rewards are diverse enough")
+        
+        # Check if loss collapsed to zero (policy collapse)
+        if abs(train_losses[-1]) < 0.001:
+            print("\n⚠️  CRITICAL: Loss collapsed to zero - policy stopped learning!")
+            print("   This indicates:")
+            print("   - Policy became too deterministic (entropy → 0)")
+            print("   - Advantages became zero (critic matches rewards perfectly)")
+            print("   - No gradient signal → no learning")
+            print("   Solutions:")
+            print("   - Increase entropy_coef (currently 0.05, try 0.1 or 0.2)")
+            print("   - Check critic training (may be overfitting)")
+            print("   - Reduce learning rate or use different schedule")
+            print("   - Monitor entropy during training (should stay > 0.01)")
     
     # Plot training curves (if matplotlib is available)
     if HAS_MATPLOTLIB:

@@ -94,7 +94,7 @@ except:
     
     if [ "$MODEL_K" = "$K" ]; then
         echo "✓ DAD model already exists: $DAD_MODEL_FILE"
-        echo "✓ Model was trained with K=$K (matches config)"
+        echo "✓ Model was trained with K=$K design steps ($((K+1)) total steps: 0-$K) (matches config)"
         echo "✓ Skipping DAD training (model detected with correct K)"
         echo "$DAD_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
         exit 0
@@ -129,6 +129,7 @@ if [ ! -f "$DAD_TRAJECTORY_FILE" ]; then
 else
     # Data file exists - verify it has correct K
     echo "✓ Found existing DAD data: $DAD_TRAJECTORY_FILE"
+    echo "✓ DAD data exists for K=$K design steps ($((K+1)) total steps: 0-$K)"
     # Check K value in saved data
     DATA_K=$(python3 -c "
 import torch
@@ -164,7 +165,7 @@ fi
 echo "Generating DAD training data and training DAD policy (Step 4/6)..."
 echo "  Method: $DAD_METHOD"
 echo "  Using MPNN predictor: $MOCU_MODEL_NAME"
-echo "  K value: $K"
+echo "  K value: $K design steps ($((K+1)) total steps: 0-$K)"
 
 cd "${PROJECT_ROOT}/scripts"
 ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$DAD_TRAJECTORY_FILE")
@@ -182,9 +183,23 @@ python3 train_dad_policy.py \
     --name "dad_policy_N${N}" \
     --epochs 100 \
     --batch-size 64 \
+    --lr 0.0001 \
+    --hidden-dim 256 \
+    --encoding-dim 16 \
+    --use-critic \
     --output-dir "$MODEL_FOLDER" \
     $USE_PREDICTED_MOCU
 
 echo "✓ DAD policy trained: ${DAD_MODEL_FILE}"
-echo "$DAD_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
+echo "✓ DAD model trained for K=$K design steps ($((K+1)) total steps: 0-$K)"
+
+# Prefer best checkpoint if it exists (better performance)
+DAD_BEST_MODEL_FILE="${MODEL_FOLDER}dad_policy_N${N}_best.pth"
+if [ -f "$DAD_BEST_MODEL_FILE" ]; then
+    echo "✓ Using best checkpoint: $DAD_BEST_MODEL_FILE"
+    echo "$DAD_BEST_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
+else
+    echo "✓ Using final checkpoint: $DAD_MODEL_FILE"
+    echo "$DAD_MODEL_FILE" > /tmp/dad_policy_path_${CONFIG_NAME}.txt
+fi
 

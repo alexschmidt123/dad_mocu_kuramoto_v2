@@ -82,42 +82,25 @@ if __name__ == '__main__':
     aInitialUpper = np.loadtxt(aInitialUpper_file)
     aInitialLower = np.loadtxt(aInitialLower_file)
     
-    # Load initial MOCU from baseline results
-    # Try to find it from any baseline method's MOCU file (first iteration)
-    baseline_methods = ['iNN', 'NN', 'ODE', 'ENTROPY', 'RANDOM']
-    initial_mocu = None
-    
-    for method in baseline_methods:
-        mocu_file = baseline_results / f'{method}_MOCU.txt'
-        if mocu_file.exists():
-            mocu_data = np.loadtxt(mocu_file)
-            if mocu_data.ndim == 1:
-                initial_mocu = mocu_data[0]  # First value is initial MOCU
-            elif mocu_data.ndim == 2:
-                initial_mocu = mocu_data[0, 0]  # First row, first column
-            break
-    
-    if initial_mocu is None:
-        print(f"Warning: Could not find initial MOCU from baseline results.")
-        print(f"Computing initial MOCU using torchdiffeq...")
-        # Fallback: compute initial MOCU
+    # ========== Choose MOCU backend for initial computation ==========
+    # Use same MOCU computation method as baseline evaluation (prefer PyCUDA, fallback to torchdiffeq)
+    # This ensures fair comparison - each simulation computes its own initial MOCU
+    device = None  # Only set if using torchdiffeq
+    try:
+        from src.core.mocu_pycuda import MOCU_pycuda as MOCU_initial
+        use_pycuda = True
+        mocu_backend = "PyCUDA (matches baseline evaluation)"
+    except (ImportError, RuntimeError) as e:
+        print(f"⚠️  Warning: PyCUDA not available: {e}")
+        print(f"   Falling back to torchdiffeq...")
         import torch
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         from src.core.mocu_torchdiffeq import MOCU_torchdiffeq as MOCU_initial
+        use_pycuda = False
         mocu_backend = f"torchdiffeq (device: {device})"
-        
-        timeMOCU = time.time()
-        it_temp_val = np.zeros(it_idx)
-        with tqdm(total=it_idx, desc=f"  Initial MOCU ({mocu_backend})", leave=False, unit="iter", ncols=100) as pbar:
-            for l in range(it_idx):
-                it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal, 
-                                              aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
-                pbar.update(1)
-        initial_mocu = np.mean(it_temp_val)
-        elapsed = time.time() - timeMOCU
-        print(f"Initial MOCU: {initial_mocu:.6f} (computed in {elapsed:.2f}s / {elapsed/60:.1f}min)")
-    else:
-        print(f"Loaded initial MOCU from baseline results: {initial_mocu:.6f}")
+    
+    print(f"Using MOCU backend: {mocu_backend}")
+    print(f"Note: Initial MOCU will be computed per simulation (matches baseline evaluation)")
     
     # ========== Initialize DAD method ==========
     from src.methods.dad_mocu import DAD_MOCU_Method
@@ -187,6 +170,26 @@ if __name__ == '__main__':
         coupling_file = os.path.join(result_folder, f'paramCouplingStrength{numberOfVaildSimulations}.txt')
         np.savetxt(coupling_file, a, fmt='%.64e')
         
+        # ========== Compute initial MOCU for this simulation ==========
+        # CRITICAL: Compute initial MOCU per simulation (matches baseline evaluation)
+        # This ensures fair comparison - each simulation has its own initial MOCU
+        timeMOCU = time.time()
+        it_temp_val = np.zeros(it_idx)
+        
+        with tqdm(total=it_idx, desc="  Initial MOCU", leave=False, unit="iter", ncols=80, mininterval=0.5) as pbar:
+            for l in range(it_idx):
+                if use_pycuda:
+                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                  aInitialLower.copy(), aInitialUpper.copy(), 0)
+                else:
+                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                  aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
+                pbar.update(1)
+        
+        MOCUInitial = np.mean(it_temp_val)
+        elapsed = time.time() - timeMOCU
+        sim_pbar.write(f'  Initial MOCU: {MOCUInitial:.6f} ({elapsed:.1f}s)')
+        
         # ========== Run DAD method ==========
         method_start_time = time.time()
         
@@ -197,7 +200,7 @@ if __name__ == '__main__':
             criticalK_init=criticalK,
             isSynchronized_init=isSynchronized,
             update_cnt=update_cnt,
-            initial_mocu=initial_mocu  # Use same initial MOCU as baselines
+            initial_mocu=MOCUInitial  # Use per-simulation initial MOCU (matches baselines)
         )
         
         total_time = time.time() - method_start_time
@@ -229,6 +232,6 @@ if __name__ == '__main__':
     outMOCUFile.close()
     
     print(f"\n✓ DAD evaluation complete: {result_folder}")
-    print(f"  Initial MOCU (from baselines): {initial_mocu:.6f}")
     print(f"  Final mean MOCU: {mean_MOCU_matrix[-1, 0]:.6f}")
+    print(f"  Note: Initial MOCU computed per simulation (matches baseline evaluation)")
 

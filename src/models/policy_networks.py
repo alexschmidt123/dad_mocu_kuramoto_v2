@@ -25,19 +25,23 @@ class DADPolicyNetwork(nn.Module):
     3. Action decoder: Outputs logits for each possible (i,j) pair
     """
     
-    def __init__(self, N, hidden_dim=64, encoding_dim=32, num_message_passing=3):
+    def __init__(self, N, hidden_dim=64, encoding_dim=32, num_message_passing=3, 
+                 history_encoder_type='lstm', max_history_len=10):
         """
         Args:
             N: Number of oscillators
             hidden_dim: Hidden dimension for LSTM and MLPs
             encoding_dim: Dimension for graph embeddings
             num_message_passing: Number of message passing layers
+            history_encoder_type: 'lstm' (order-dependent), 'sum' (order-independent), or 'cat' (concatenation)
+            max_history_len: Maximum history length for 'cat' encoder (default: 10)
         """
         super(DADPolicyNetwork, self).__init__()
         self.N = N
         self.hidden_dim = hidden_dim
         self.encoding_dim = encoding_dim
         self.num_actions = N * (N - 1) // 2  # Number of unique pairs
+        self.history_encoder_type = history_encoder_type
         
         # ========== Graph State Encoder (similar to iNN) ==========
         self.lin0 = nn.Linear(1, encoding_dim)  # Node features: frequencies
@@ -60,19 +64,41 @@ class DADPolicyNetwork(nn.Module):
             ReLU()
         )
         
-        # ========== History Encoder (LSTM for sequential decisions) ==========
+        # ========== History Encoder (LSTM or Set-Equivariant Sum) ==========
         # Each history item: (i, j, observation) → embedding
         self.history_embed = nn.Embedding(N * N + 2, hidden_dim // 4)  # For i, j indices
         self.obs_embed = nn.Embedding(2, hidden_dim // 4)  # For sync/non-sync observation
         
-        # LSTM to encode sequence of past decisions
-        self.history_lstm = nn.LSTM(
-            input_size=hidden_dim // 2,
-            hidden_size=hidden_dim,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.1
-        )
+        if history_encoder_type == 'lstm':
+            # LSTM: Order-dependent (captures temporal dependencies)
+            # Used in iDAD for time-dependent problems (e.g., epidemic models)
+            self.history_lstm = nn.LSTM(
+                input_size=hidden_dim // 2,
+                hidden_size=hidden_dim,
+                num_layers=2,
+                batch_first=True,
+                dropout=0.1
+            )
+        elif history_encoder_type == 'sum':
+            # Set-equivariant sum: Order-independent (iDAD default for most cases)
+            # Each (i, j, obs) pair encoded independently, then summed
+            self.pair_encoder = nn.Sequential(
+                Linear(hidden_dim // 2, encoding_dim),
+                ReLU(),
+                Linear(encoding_dim, encoding_dim)
+            )
+        elif history_encoder_type == 'cat':
+            # Concatenation: Concatenates all encodings (iDAD option 3)
+            # Fixed-size concatenation of all history encodings
+            self.max_history_len = max_history_len
+            self.pair_encoder = nn.Sequential(
+                Linear(hidden_dim // 2, encoding_dim),
+                ReLU(),
+                Linear(encoding_dim, encoding_dim)
+            )
+            # Output will be [batch, max_history_len * encoding_dim]
+        else:
+            raise ValueError(f"history_encoder_type must be 'lstm', 'sum', or 'cat', got {history_encoder_type}")
         
         # ========== Action Decoder ==========
         self.action_decoder = nn.Sequential(
@@ -152,18 +178,28 @@ class DADPolicyNetwork(nn.Module):
 
     def encode_history(self, history_data):
         """
-        Encode history of past (action, observation) pairs using LSTM.
+        Encode history of past (action, observation) pairs.
+        
+        Supports two modes (matching iDAD):
+        - 'lstm': Order-dependent sequential processing (for time-dependent problems)
+        - 'sum': Order-independent set-equivariant sum (iDAD default for most cases)
         """
         if history_data is None or len(history_data) == 0:
             batch_size = 1
             device = next(self.parameters()).device
-            return torch.zeros(batch_size, self.hidden_dim, device=device)
+            if self.history_encoder_type == 'lstm':
+                return torch.zeros(batch_size, self.hidden_dim, device=device)
+            else:  # sum
+                return torch.zeros(batch_size, self.encoding_dim, device=device)
         
         # Convert history to tensor
         if isinstance(history_data, list):
             if len(history_data) == 0:
                 device = next(self.parameters()).device
-                return torch.zeros(1, self.hidden_dim, device=device)
+                if self.history_encoder_type == 'lstm':
+                    return torch.zeros(1, self.hidden_dim, device=device)
+                else:  # sum
+                    return torch.zeros(1, self.encoding_dim, device=device)
             
             history_tensor = torch.tensor(history_data, dtype=torch.long)
             history_tensor = history_tensor.unsqueeze(0)
@@ -184,55 +220,92 @@ class DADPolicyNetwork(nn.Module):
         j_emb = self.history_embed(j_indices)
         obs_emb = self.obs_embed(obs_indices)
         
-        history_emb = torch.cat([i_emb, j_emb], dim=-1)
-        
-        if not history_emb.is_contiguous():
-            history_emb = history_emb.contiguous()
-        
-        # === Use cuDNN for LSTM if available (much faster!) ===
-        # cuDNN provides 3-10x speedup for LSTM operations
-        # Only disable if explicitly requested via environment variable
-        USE_CUDNN_FOR_LSTM = os.getenv('USE_CUDNN_FOR_LSTM', '1') == '1'
-        
-        if device.type == 'cuda':
-            torch.cuda.synchronize()
-        
-        cudnn_enabled = torch.backends.cudnn.enabled
-        cudnn_benchmark = torch.backends.cudnn.benchmark
-        
-        try:
-            # Enable cuDNN for LSTM if requested (default: enabled for speed)
-            if USE_CUDNN_FOR_LSTM:
-                # Keep cuDNN enabled - use optimized LSTM implementation
-                pass  # cuDNN already enabled
-            else:
-                # Temporarily disable cuDNN (for debugging compatibility issues)
-                torch.backends.cudnn.enabled = False
-                torch.backends.cudnn.benchmark = False
+        if self.history_encoder_type == 'lstm':
+            # === LSTM: Order-dependent (iDAD style for time-dependent problems) ===
+            history_emb = torch.cat([i_emb, j_emb], dim=-1)
             
-            lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
+            if not history_emb.is_contiguous():
+                history_emb = history_emb.contiguous()
+            
+            # Use cuDNN for LSTM if available (much faster!)
+            USE_CUDNN_FOR_LSTM = os.getenv('USE_CUDNN_FOR_LSTM', '1') == '1'
             
             if device.type == 'cuda':
                 torch.cuda.synchronize()
-        except RuntimeError as e:
-            # If cuDNN LSTM fails, fall back to non-cuDNN
-            if 'CUDNN' in str(e) or 'cuDNN' in str(e):
-                if not hasattr(self, '_cudnn_lstm_warned'):
-                    print(f"[WARNING] cuDNN LSTM failed, falling back to non-cuDNN: {e}")
-                    self._cudnn_lstm_warned = True
-                torch.backends.cudnn.enabled = False
-                torch.backends.cudnn.benchmark = False
+            
+            cudnn_enabled = torch.backends.cudnn.enabled
+            cudnn_benchmark = torch.backends.cudnn.benchmark
+            
+            try:
+                if USE_CUDNN_FOR_LSTM:
+                    pass  # cuDNN already enabled
+                else:
+                    torch.backends.cudnn.enabled = False
+                    torch.backends.cudnn.benchmark = False
+                
                 lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
-            else:
-                raise
-        finally:
-            # Restore cuDNN settings
-            torch.backends.cudnn.enabled = cudnn_enabled
-            torch.backends.cudnn.benchmark = cudnn_benchmark
+                
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
+            except RuntimeError as e:
+                if 'CUDNN' in str(e) or 'cuDNN' in str(e):
+                    if not hasattr(self, '_cudnn_lstm_warned'):
+                        print(f"[WARNING] cuDNN LSTM failed, falling back to non-cuDNN: {e}")
+                        self._cudnn_lstm_warned = True
+                    torch.backends.cudnn.enabled = False
+                    torch.backends.cudnn.benchmark = False
+                    lstm_out, (h_n, c_n) = self.history_lstm(history_emb)
+                else:
+                    raise
+            finally:
+                torch.backends.cudnn.enabled = cudnn_enabled
+                torch.backends.cudnn.benchmark = cudnn_benchmark
+            
+            history_embedding = h_n[-1]  # [batch, hidden_dim]
+            return history_embedding
         
-        history_embedding = h_n[-1]
+        elif self.history_encoder_type == 'sum':
+            # === Set-Equivariant Sum: Order-independent (iDAD style) ===
+            # Encode each (i, j, obs) pair independently, then sum
+            pair_emb = torch.cat([i_emb, j_emb], dim=-1)  # [batch, seq, hidden_dim//2]
+            
+            # Encode each pair
+            pair_encodings = []
+            for t in range(seq_len):
+                pair_enc = self.pair_encoder(pair_emb[:, t, :])  # [batch, encoding_dim]
+                pair_encodings.append(pair_enc)
+            
+            # Sum (set-equivariant operation - order-independent)
+            sum_encoding = sum(pair_encodings)  # [batch, encoding_dim]
+            return sum_encoding
         
-        return history_embedding
+        else:  # cat - concatenation (iDAD option 3)
+            # === Concatenation: Fixed-size concatenation (iDAD style) ===
+            # Encode each (i, j, obs) pair independently, then concatenate
+            pair_emb = torch.cat([i_emb, j_emb], dim=-1)  # [batch, seq, hidden_dim//2]
+            
+            # Encode each pair
+            pair_encodings = []
+            for t in range(seq_len):
+                pair_enc = self.pair_encoder(pair_emb[:, t, :])  # [batch, encoding_dim]
+                pair_encodings.append(pair_enc)
+            
+            # Concatenate all encodings
+            cat_encoding = torch.cat(pair_encodings, dim=-1)  # [batch, seq_len * encoding_dim]
+            
+            # Pad or truncate to fixed size
+            target_size = self.max_history_len * self.encoding_dim
+            current_size = cat_encoding.size(-1)
+            
+            if current_size < target_size:
+                # Pad with zeros
+                padding = torch.zeros(batch_size, target_size - current_size, device=cat_encoding.device)
+                cat_encoding = torch.cat([cat_encoding, padding], dim=-1)
+            elif current_size > target_size:
+                # Truncate
+                cat_encoding = cat_encoding[:, :target_size]
+            
+            return cat_encoding  # [batch, max_history_len * encoding_dim]
 
 
     def forward(self, state_data, history_data=None, available_actions_mask=None):
@@ -252,8 +325,20 @@ class DADPolicyNetwork(nn.Module):
         # Encode current state
         state_emb = self.encode_state(state_data)  # [batch_size, hidden_dim]
         
-        # Encode history
-        history_emb = self.encode_history(history_data)  # [batch_size, hidden_dim]
+        # Encode history (LSTM, sum, or cat)
+        history_emb = self.encode_history(history_data)  # [batch_size, hidden_dim] or [batch_size, encoding_dim] or [batch_size, max_history_len*encoding_dim]
+        
+        # Project history to hidden_dim if needed
+        if self.history_encoder_type == 'sum':
+            # history_emb is [batch, encoding_dim], need to project to hidden_dim
+            if not hasattr(self, 'history_proj'):
+                self.history_proj = nn.Linear(self.encoding_dim, self.hidden_dim).to(history_emb.device)
+            history_emb = self.history_proj(history_emb)  # [batch, hidden_dim]
+        elif self.history_encoder_type == 'cat':
+            # history_emb is [batch, max_history_len * encoding_dim], project to hidden_dim
+            if not hasattr(self, 'history_proj'):
+                self.history_proj = nn.Linear(self.max_history_len * self.encoding_dim, self.hidden_dim).to(history_emb.device)
+            history_emb = self.history_proj(history_emb)  # [batch, hidden_dim]
         
         # Combine state and history
         combined = torch.cat([state_emb, history_emb], dim=-1)  # [batch_size, hidden_dim*2]

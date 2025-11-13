@@ -6,7 +6,6 @@ import argparse
 sys.path.append("./src")
 
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
 # Parse command line arguments
@@ -124,10 +123,10 @@ legend_labels = []
 
 if 'iNN' in available_methods:
     plot_args.extend([x_ax, method_data['iNN']['mocu'], 'r*:'])
-    legend_labels.append('Proposed (iterative)')
+    legend_labels.append('iNN')
 if 'NN' in available_methods:
     plot_args.extend([x_ax, method_data['NN']['mocu'], 'rs--'])
-    legend_labels.append('Proposed')
+    legend_labels.append('NN')
 if 'ODE' in available_methods:
     plot_args.extend([x_ax, method_data['ODE']['mocu'], 'yo--'])
     legend_labels.append('ODE')
@@ -142,7 +141,7 @@ if 'REGRESSION_SCORER' in available_methods:
     legend_labels.append('Regression Scorer')
 if 'DAD' in available_methods:
     plot_args.extend([x_ax, method_data['DAD']['mocu'], 'm^-'])
-    legend_labels.append('DAD (Proposed)')
+    legend_labels.append('DAD MOCU')
 
 plt.plot(*plot_args)
 plt.legend(legend_labels, loc='center left', bbox_to_anchor=(1, 0.5))
@@ -169,10 +168,10 @@ legend_labels = []
 
 if 'iNN' in available_methods:
     plot_args.extend([x_ax, np.insert(np.cumsum(method_data['iNN']['time']), 0, 0.0000000001), 'r*:'])
-    legend_labels.append('Proposed (iterative)')
+    legend_labels.append('iNN')
 if 'NN' in available_methods:
     plot_args.extend([x_ax, np.insert(np.cumsum(method_data['NN']['time']), 0, 0.0000000001), 'rs--'])
-    legend_labels.append('Proposed')
+    legend_labels.append('NN')
 if 'ODE' in available_methods:
     plot_args.extend([x_ax, np.insert(np.cumsum(method_data['ODE']['time']), 0, 0.0000000001), 'yo--'])
     legend_labels.append('ODE')
@@ -187,7 +186,7 @@ if 'REGRESSION_SCORER' in available_methods:
     legend_labels.append('Regression Scorer')
 if 'DAD' in available_methods:
     plot_args.extend([x_ax, np.insert(np.cumsum(method_data['DAD']['time']), 0, 0.0000000001), 'm^-'])
-    legend_labels.append('DAD (Proposed)')
+    legend_labels.append('DAD MOCU')
 
 plt.plot(*plot_args)
 plt.legend(legend_labels, loc='center left', bbox_to_anchor=(1, 0.5))
@@ -195,7 +194,7 @@ plt.yscale('log')
 plt.xlabel('Number of updates')
 plt.ylabel('Cumulative time complexity (in seconds)')
 plt.xticks(np.arange(0, update_cnt + 1, 1)) 
-plt.ylim(1e-7, 1e2)
+plt.ylim(1e-8, 1e2)
 plt.grid(True)
 plt.tight_layout()
 if args.baseline_only:

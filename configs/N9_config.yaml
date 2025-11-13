@@ -47,7 +47,7 @@ experiment:
 # DAD policy training data generation
 dad_data:
   num_episodes: 1000       # Number of trajectories to generate (recommended minimum for REINFORCE)
-  K: 4                     # Number of sequential experiments per trajectory
+  K: 10                    # Number of sequential experiments per trajectory (10 design steps, aligns with experiment.update_count)
   use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended, avoids CUDA conflicts)
 
 # Paths (relative to project root)

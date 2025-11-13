@@ -263,7 +263,7 @@ def main():
     print("=" * 80)
     print(f"Configuration:")
     print(f"  - Number of oscillators (N): {args.N}")
-    print(f"  - Sequential experiments (K): {args.K}")
+    print(f"  - Design steps (K): {args.K} (will generate {args.K} design steps = {args.K+1} total steps 0-{args.K})")
     print(f"  - Number of episodes: {args.num_episodes}")
     print(f"  - Expert policy: random (for REINFORCE training)")
     print(f"  - Pre-compute MOCU: {'Yes (using MPNN predictor)' if args.use_mpnn_predictor else 'No (will compute during training)'}")
@@ -325,6 +325,7 @@ def main():
                   f"Avg: {avg_time:.2f}s/episode | ETA: {eta/60:.1f} min")
     
     print(f"\n✓ Generated {len(trajectories)} valid trajectories")
+    print(f"✓ DAD data generated for K={args.K} design steps ({args.K+1} total steps: 0-{args.K})")
     
     # Save data
     output_file = output_dir / f'dad_trajectories_N{args.N}_K{args.K}_random.pth'

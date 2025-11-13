@@ -45,7 +45,7 @@ experiment:
 # DAD policy training data generation
 dad_data:
   num_episodes: 100        # Number of trajectories to generate (MINIMAL for testing)
-  K: 5                     # Number of sequential experiments per trajectory
+  K: 4                     # Number of sequential experiments per trajectory (4 design steps, aligns with experiment.update_count)
   use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended)
 
 # Paths (relative to project root)
