@@ -160,7 +160,8 @@ dad_mocu_kuramoto_v2/
 ├── models/                      # Saved trained models
 ├── data/                        # Generated datasets
 ├── results/                     # Experiment results
-└── run.sh                       # Main automation script
+├── run.sh                       # Main automation script
+└── run_sweepK.sh                # K sweep automation script
 ```
 
 ## Quick Start
@@ -180,6 +181,50 @@ This will:
 3. Train DAD policy (if DAD method is enabled)
 4. Evaluate all methods
 5. Generate visualizations
+
+### K Parameter (Sequence Length)
+
+**K** represents the number of sequential experiments (design steps) in each OED episode. It's a key parameter that affects:
+- DAD policy training (sequence length for trajectories)
+- Evaluation runs (number of design steps per system)
+- Model naming (DAD models include K in filename: `dad_policy_N5_K10.pth`)
+
+**K is configured in YAML files** with initial value K=10:
+- `experiment.update_count`: K for evaluation runs
+- `dad_data.K`: K for DAD training data (must match `update_count`)
+
+**K can be overridden** when running experiments:
+
+```bash
+# Use K from config file (default: K=10)
+bash run.sh configs/N5_config.yaml
+
+# Override K via argument
+bash run.sh configs/N5_config.yaml 4
+
+# Override K via environment variable
+K_OVERRIDE=6 bash run.sh configs/N5_config.yaml
+```
+
+**Priority**: argument > environment variable > config file > default 10
+
+**K Sweep Experiments**:
+
+Run experiments with multiple K values to study the effect of sequence length:
+
+```bash
+# Run with default K values: 4, 6, 8, 10
+bash run_sweepK.sh configs/N5_config.yaml
+
+# Run with custom K values
+bash run_sweepK.sh configs/N5_config.yaml 2 4 6 8 10
+```
+
+This will:
+- Run the complete pipeline for each K value
+- Save results in separate folders: `results/N5_config_K4/`, `results/N5_config_K6/`, etc.
+- Save DAD models with K in filename: `dad_policy_N5_K4.pth`, `dad_policy_N5_K6.pth`, etc.
+- Reuse MOCU data and MPNN models (they don't depend on K)
 
 ### Component Verification (3-5 minutes) ⚡
 
@@ -210,6 +255,13 @@ bash run.sh configs/N7_config.yaml
 
 # For N=9 oscillators (~24-30 hours)
 bash run.sh configs/N9_config.yaml
+```
+
+**Note**: All config files set K=10 as the initial value. You can override K for any experiment:
+
+```bash
+# Run N5 experiment with K=4 instead of default K=10
+bash run.sh configs/N5_config.yaml 4
 ```
 
 ## Two-Level Architecture

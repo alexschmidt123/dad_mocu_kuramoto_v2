@@ -15,6 +15,8 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
+# Remove _K* suffix if present to get base config name (for folder structure)
+BASE_CONFIG_NAME=$(echo "$CONFIG_NAME" | sed 's/_K[0-9]*$//')
 TIMESTAMP=$(date +"%m%d%Y_%H%M%S")
 
 # Use timestamp for results folder to allow multiple runs
@@ -39,7 +41,7 @@ NUM_SIMULATIONS=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "num_simulations
 # Run baseline methods (matching original paper + regression_scorer)
 BASELINE_METHODS="iNN,NN,ODE,ENTROPY,RANDOM,REGRESSION_SCORER"
 
-RESULT_RUN_FOLDER="${PROJECT_ROOT}/results/${CONFIG_NAME}/${TIMESTAMP}/"
+RESULT_RUN_FOLDER="${PROJECT_ROOT}/results/${BASE_CONFIG_NAME}/${TIMESTAMP}/"
 mkdir -p "$RESULT_RUN_FOLDER"
 
 export MOCU_MODEL_NAME="$MOCU_MODEL_NAME"

@@ -1,19 +1,29 @@
 #!/bin/bash
 # Sweep K values: Run entire experiment pipeline with different K values
-# Usage: bash scripts/bash/run_sweepK.sh <config_file>
-# Example: bash scripts/bash/run_sweepK.sh configs/N5_config.yaml
+# This script simply calls run.sh multiple times with different K values
+# Usage: bash run_sweepK.sh <config_file> [K_values...]
+# Example: bash run_sweepK.sh configs/N5_config.yaml
+#          bash run_sweepK.sh configs/N5_config.yaml 4 6 8 10
 
 set -e
 
+# Get script directory and determine project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# If script is in scripts/bash/, go up 2 levels; if in root, use current dir
+if [[ "$SCRIPT_DIR" == *"/scripts/bash" ]]; then
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+else
+    PROJECT_ROOT="$SCRIPT_DIR"
+fi
+export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
+
 CONFIG_FILE=$1
 if [ -z "$CONFIG_FILE" ]; then
-    echo "Usage: $0 <config_file>"
+    echo "Usage: $0 <config_file> [K_values...]"
     echo "Example: $0 configs/N5_config.yaml"
+    echo "         $0 configs/N5_config.yaml 4 6 8 10"
     exit 1
 fi
-
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 # Resolve config file path
 if [[ "$CONFIG_FILE" != /* ]]; then
@@ -28,8 +38,13 @@ fi
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 N=$(grep "^N:" "$CONFIG_FILE" | awk '{print $2}')
 
-# K values to sweep
-K_VALUES=(4 6 8 10)
+# K values to sweep (use command line args if provided, otherwise default)
+if [ $# -gt 1 ]; then
+    shift  # Remove config_file from args
+    K_VALUES=("$@")
+else
+    K_VALUES=(4 6 8 10)
+fi
 
 echo "=========================================="
 echo "K Sweep Experiment"
@@ -39,147 +54,57 @@ echo "N: $N"
 echo "K values: ${K_VALUES[@]}"
 echo "=========================================="
 echo ""
+echo "This will run: bash run.sh $CONFIG_FILE <K> for each K value"
+echo ""
 
-# Create temporary directory for modified configs
-TMP_DIR="${PROJECT_ROOT}/tmp_sweepK_${CONFIG_NAME}"
-mkdir -p "$TMP_DIR"
-
-# Function to update K in config file
-update_config_K() {
-    local config_file=$1
-    local k_value=$2
-    local output_file=$3
-    
-    # Use Python to properly parse and update YAML
-    python3 << PYEOF
-import yaml
-import sys
-
-with open('$config_file', 'r') as f:
-    config = yaml.safe_load(f)
-
-# Update experiment.update_count (this is K)
-if 'experiment' in config:
-    config['experiment']['update_count'] = $k_value
-
-# Update dad_data.K (should match update_count)
-if 'dad_data' in config:
-    config['dad_data']['K'] = $k_value
-
-# Write updated config (preserve order and formatting)
-with open('$output_file', 'w') as f:
-    yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-print(f"Updated config: update_count={config['experiment']['update_count']}, dad_data.K={config['dad_data']['K']}")
-PYEOF
-}
-
-# Run experiment for each K value
+# Run run.sh for each K value
 for K in "${K_VALUES[@]}"; do
     echo ""
     echo "=========================================="
     echo "Running with K=$K"
     echo "=========================================="
-    
-    # Create temporary config with updated K
-    # Use a unique config name that includes K to avoid conflicts
-    TMP_CONFIG_NAME="${CONFIG_NAME}_K${K}"
-    TMP_CONFIG="${TMP_DIR}/${TMP_CONFIG_NAME}.yaml"
-    update_config_K "$CONFIG_FILE" "$K" "$TMP_CONFIG"
-    
-    echo "Temporary config: $TMP_CONFIG"
-    echo "Config name: $TMP_CONFIG_NAME"
     echo ""
     
-    # Run full pipeline for this K value
-    echo "Step 1: Generate MOCU data..."
-    bash "${PROJECT_ROOT}/scripts/bash/step1_generate_mocu_data.sh" "$TMP_CONFIG" || {
-        echo "Error in step1 for K=$K"
+    # Simply call run.sh with K as second argument
+    bash "${PROJECT_ROOT}/run.sh" "$CONFIG_FILE" "$K" || {
+        echo "Error: Failed for K=$K"
+        echo "Continuing with next K value..."
         continue
     }
-    
-    echo ""
-    echo "Step 2: Train MPNN predictor..."
-    bash "${PROJECT_ROOT}/scripts/bash/step2_train_mpnn.sh" "$TMP_CONFIG" || {
-        echo "Error in step2 for K=$K"
-        continue
-    }
-    
-    echo ""
-    echo "Step 3: Evaluate baselines..."
-    bash "${PROJECT_ROOT}/scripts/bash/step3_evaluate_baselines.sh" "$TMP_CONFIG" || {
-        echo "Error in step3 for K=$K"
-        continue
-    }
-    
-    echo ""
-    echo "Step 4: Train DAD policy (K=$K will be in model name)..."
-    bash "${PROJECT_ROOT}/scripts/bash/step4_train_dad.sh" "$TMP_CONFIG" || {
-        echo "Error in step4 for K=$K"
-        continue
-    }
-    
-    echo ""
-    echo "Step 5: Evaluate DAD..."
-    bash "${PROJECT_ROOT}/scripts/bash/step5_evaluate_dad.sh" "$TMP_CONFIG" || {
-        echo "Error in step5 for K=$K"
-        continue
-    }
-    
-    echo ""
-    echo "Step 6: Visualize results..."
-    bash "${PROJECT_ROOT}/scripts/bash/step6_visualize.sh" "$TMP_CONFIG" || {
-        echo "Error in step6 for K=$K"
-        continue
-    }
-    
-    # Find the results folder with timestamp (created in step3)
-    # Results are stored in results/${CONFIG_NAME}_K${K}/${TIMESTAMP}/
-    # We need to find the most recent timestamp folder
-    RESULTS_BASE_DIR="${PROJECT_ROOT}/results/${TMP_CONFIG_NAME}"
-    if [ -d "$RESULTS_BASE_DIR" ]; then
-        # Get the most recent timestamp folder
-        LATEST_RESULT_DIR=$(ls -td "${RESULTS_BASE_DIR}"/*/ 2>/dev/null | head -1)
-        
-        if [ -n "$LATEST_RESULT_DIR" ] && [ -d "$LATEST_RESULT_DIR" ]; then
-            # Extract timestamp from folder name
-            TIMESTAMP=$(basename "$LATEST_RESULT_DIR")
-            
-            # Copy config file to results folder with new name
-            CONFIG_COPY_NAME="N${N}_K${K}_config.yaml"
-            CONFIG_COPY_PATH="${LATEST_RESULT_DIR}${CONFIG_COPY_NAME}"
-            
-            cp "$TMP_CONFIG" "$CONFIG_COPY_PATH"
-            echo "✓ Copied config to: $CONFIG_COPY_PATH"
-        else
-            echo "⚠ Could not find results folder for K=$K"
-        fi
-    else
-        echo "⚠ Results directory not found: $RESULTS_BASE_DIR"
-    fi
     
     echo ""
     echo "✓ Completed K=$K experiment"
     echo ""
 done
 
-# Cleanup temporary configs
-echo "Cleaning up temporary configs..."
-rm -rf "$TMP_DIR"
-
 echo ""
 echo "=========================================="
 echo "K Sweep Complete!"
 echo "=========================================="
+echo ""
 echo "Results for each K are in:"
 for K in "${K_VALUES[@]}"; do
-    echo "  K=$K: results/${CONFIG_NAME}_K${K}/"
+    RESULT_DIR="${PROJECT_ROOT}/results/${CONFIG_NAME}_K${K}/"
+    if [ -d "$RESULT_DIR" ]; then
+        LATEST=$(ls -td "${RESULT_DIR}"/*/ 2>/dev/null | head -1)
+        if [ -n "$LATEST" ]; then
+            echo "  K=$K: $LATEST"
+        else
+            echo "  K=$K: $RESULT_DIR (no timestamp folder found)"
+        fi
+    else
+        echo "  K=$K: (not found)"
+    fi
 done
 echo ""
 echo "DAD models for each K are in:"
 for K in "${K_VALUES[@]}"; do
-    MODEL_DIR=$(cat /tmp/mocu_model_folder_${CONFIG_NAME}_K${K}.txt 2>/dev/null || echo "models/${CONFIG_NAME}_K${K}/")
-    echo "  K=$K: ${MODEL_DIR}dad_policy_N${N}_K${K}.pth"
+    MODEL_DIR="${PROJECT_ROOT}/models/${CONFIG_NAME}/"
+    MODEL_FILE="${MODEL_DIR}dad_policy_N${N}_K${K}.pth"
+    if [ -f "$MODEL_FILE" ]; then
+        echo "  K=$K: $MODEL_FILE"
+    else
+        echo "  K=$K: (not found)"
+    fi
 done
 echo ""
-

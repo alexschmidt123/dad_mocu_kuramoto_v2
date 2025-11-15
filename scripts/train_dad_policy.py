@@ -1103,7 +1103,7 @@ def main():
                 mocu_std=mocu_std,
                 use_predicted_mocu=use_predicted_mocu,
                 epoch_num=epoch,
-                entropy_coef=0.05,  # Increased to prevent policy collapse (was 0.02, loss collapsed to 0)
+                entropy_coef=0.15,  # Increased significantly to prevent policy collapse (was 0.05, still collapsing)
                 critic=critic,
                 critic_optimizer=critic_optimizer
             )
@@ -1181,7 +1181,7 @@ def main():
             print("   - Advantages became zero (critic matches rewards perfectly)")
             print("   - No gradient signal → no learning")
             print("   Solutions:")
-            print("   - Increase entropy_coef (currently 0.05, try 0.1 or 0.2)")
+            print("   - Increase entropy_coef (currently 0.15, try 0.2 or 0.3 if still collapsing)")
             print("   - Check critic training (may be overfitting)")
             print("   - Reduce learning rate or use different schedule")
             print("   - Monitor entropy during training (should stay > 0.01)")

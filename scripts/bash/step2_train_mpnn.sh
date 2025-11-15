@@ -14,10 +14,13 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
+# Extract base config name (remove _K* suffix if present, since MPNN model doesn't depend on K)
+BASE_CONFIG_NAME=$(echo "$CONFIG_NAME" | sed 's/_K[0-9]*$//')
 EPOCHS=$(grep "epochs:" $CONFIG_FILE | awk '{print $2}')
 CONSTRAIN_WEIGHT=$(grep "constrain_weight:" $CONFIG_FILE | awk '{print $2}')
 
-MODEL_FOLDER="${PROJECT_ROOT}/models/${CONFIG_NAME}/"
+# Use base config name for model folder (MPNN model doesn't depend on K)
+MODEL_FOLDER="${PROJECT_ROOT}/models/${BASE_CONFIG_NAME}/"
 MODEL_FILE="${MODEL_FOLDER}model.pth"
 STATS_FILE="${MODEL_FOLDER}statistics.pth"
 
@@ -37,7 +40,9 @@ fi
 if [ -f "$MODEL_FILE" ] && [ -f "$STATS_FILE" ] && [ -f "$TRAIN_FILE" ]; then
     echo "✓ MPNN model already exists: $MODEL_FILE"
     echo "✓ Skipping MPNN training (model and data detected)"
-    echo "${CONFIG_NAME}" > /tmp/mocu_model_name_${CONFIG_NAME}.txt
+    echo "  Note: MPNN model doesn't depend on K, so same model is used for all K values"
+    # Use CONFIG_NAME for tmp files to match other scripts
+    echo "${BASE_CONFIG_NAME}" > /tmp/mocu_model_name_${CONFIG_NAME}.txt
     echo "$MODEL_FOLDER" > /tmp/mocu_model_folder_${CONFIG_NAME}.txt
     exit 0
 fi
@@ -59,6 +64,7 @@ python3 train_predictor.py \
     --output_dir "$ABS_MODEL_FOLDER"
 
 echo "✓ MPNN predictor trained: ${MODEL_FILE}"
-echo "${CONFIG_NAME}" > /tmp/mocu_model_name_${CONFIG_NAME}.txt
+# Use BASE_CONFIG_NAME for model name, but CONFIG_NAME for tmp file to match other scripts
+echo "${BASE_CONFIG_NAME}" > /tmp/mocu_model_name_${CONFIG_NAME}.txt
 echo "$MODEL_FOLDER" > /tmp/mocu_model_folder_${CONFIG_NAME}.txt
 

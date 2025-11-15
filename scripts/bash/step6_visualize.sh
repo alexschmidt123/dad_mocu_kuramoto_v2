@@ -14,14 +14,16 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
+# Remove _K* suffix if present to get base config name (for folder structure)
+BASE_CONFIG_NAME=$(echo "$CONFIG_NAME" | sed 's/_K[0-9]*$//')
 N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
 
 # Get update_cnt from config (auto-detect from data if not provided)
 UPDATE_CNT=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "update_count:" | awk '{print $2}')
 [ -z "$UPDATE_CNT" ] && UPDATE_CNT=""
 
-# Get result folder (most recent)
-RESULT_RUN_FOLDER=$(ls -td ${PROJECT_ROOT}/results/${CONFIG_NAME}/*/ 2>/dev/null | head -1 || echo "")
+# Get result folder (most recent) - use BASE_CONFIG_NAME
+RESULT_RUN_FOLDER=$(ls -td ${PROJECT_ROOT}/results/${BASE_CONFIG_NAME}/*/ 2>/dev/null | head -1 || echo "")
 
 if [ -z "$RESULT_RUN_FOLDER" ]; then
     echo "Error: No results folder found. Run step3_evaluate_baselines.sh first."
