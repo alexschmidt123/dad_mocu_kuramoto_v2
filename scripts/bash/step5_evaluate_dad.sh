@@ -1,5 +1,6 @@
 #!/bin/bash
-# Step 5: Evaluate DAD method using same initial MOCU as baselines
+# Step 5: Evaluate DAD methods using same initial MOCU as baselines
+# Evaluates both DAD-MOCU and iDAD-MOCU methods if their policies exist
 
 set -e
 
@@ -16,15 +17,29 @@ CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 
 # Get baseline results folder
 BASELINE_RESULTS=$(cat /tmp/baseline_results_folder_${CONFIG_NAME}.txt 2>/dev/null || echo "")
-DAD_POLICY_PATH=$(cat /tmp/dad_policy_path_${CONFIG_NAME}.txt 2>/dev/null || echo "")
+DAD_MOCU_POLICY_PATH=$(cat /tmp/dad_mocu_policy_path_${CONFIG_NAME}.txt 2>/dev/null || echo "")
+IDAD_MOCU_POLICY_PATH=$(cat /tmp/idad_mocu_policy_path_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 
 if [ -z "$BASELINE_RESULTS" ] || [ ! -d "$BASELINE_RESULTS" ]; then
     echo "Error: Baseline results not found. Run step3_evaluate_baselines.sh first."
     exit 1
 fi
 
-if [ -z "$DAD_POLICY_PATH" ] || [ ! -f "$DAD_POLICY_PATH" ]; then
-    echo "Error: DAD policy not found. Run step4_train_dad.sh first."
+# Check which methods have trained policies
+HAS_DAD_MOCU=false
+HAS_IDAD_MOCU=false
+
+if [ -n "$DAD_MOCU_POLICY_PATH" ] && [ -f "$DAD_MOCU_POLICY_PATH" ]; then
+    HAS_DAD_MOCU=true
+fi
+
+if [ -n "$IDAD_MOCU_POLICY_PATH" ] && [ -f "$IDAD_MOCU_POLICY_PATH" ]; then
+    HAS_IDAD_MOCU=true
+fi
+
+if [ "$HAS_DAD_MOCU" = false ] && [ "$HAS_IDAD_MOCU" = false ]; then
+    echo "Error: No DAD policies found. Run step4_train_dad.sh first."
+    echo "  Expected: /tmp/dad_mocu_policy_path_${CONFIG_NAME}.txt or /tmp/idad_mocu_policy_path_${CONFIG_NAME}.txt"
     exit 1
 fi
 
@@ -51,16 +66,32 @@ export EVAL_UPDATE_CNT="$UPDATE_CNT"
 export EVAL_IT_IDX="$IT_IDX"
 export EVAL_K_MAX="$K_MAX"
 export EVAL_NUM_SIMULATIONS="$NUM_SIMULATIONS"
-export DAD_POLICY_PATH="$DAD_POLICY_PATH"
 
 echo "Running DAD evaluation (Step 5/6)..."
 echo "  Using baseline results: $BASELINE_RESULTS"
-echo "  DAD policy: $DAD_POLICY_PATH"
 echo "  N=$N, update_cnt=$UPDATE_CNT, it_idx=$IT_IDX, K_max=$K_MAX, num_simulations=$NUM_SIMULATIONS"
 echo "  Results: $RESULT_FOLDER"
 
 cd "${PROJECT_ROOT}/scripts"
-python3 dad_eval.py --baseline_results "$BASELINE_RESULTS" --result_folder "$RESULT_FOLDER"
 
+# Evaluate DAD_MOCU if policy exists
+if [ "$HAS_DAD_MOCU" = true ]; then
+    echo ""
+    echo "Evaluating DAD_MOCU method..."
+    export DAD_POLICY_PATH="$DAD_MOCU_POLICY_PATH"
+    python3 dad_eval.py --baseline_results "$BASELINE_RESULTS" --result_folder "$RESULT_FOLDER" --method_name "DAD_MOCU"
+    echo "✓ DAD_MOCU evaluation complete"
+fi
+
+# Evaluate IDAD_MOCU if policy exists
+if [ "$HAS_IDAD_MOCU" = true ]; then
+    echo ""
+    echo "Evaluating IDAD_MOCU method..."
+    export DAD_POLICY_PATH="$IDAD_MOCU_POLICY_PATH"
+    python3 dad_eval.py --baseline_results "$BASELINE_RESULTS" --result_folder "$RESULT_FOLDER" --method_name "IDAD_MOCU"
+    echo "✓ IDAD_MOCU evaluation complete"
+fi
+
+echo ""
 echo "✓ DAD evaluation complete: $RESULT_FOLDER"
 

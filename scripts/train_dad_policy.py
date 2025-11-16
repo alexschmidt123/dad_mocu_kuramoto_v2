@@ -216,13 +216,18 @@ def train_imitation(model, dataloader, optimizer, device, N):
 
 def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max=20480, 
                     use_baseline=True, mocu_model=None, mocu_mean=None, mocu_std=None, use_predicted_mocu=False,
-                    epoch_num=None, entropy_coef=0.01, critic=None, critic_optimizer=None):
+                    epoch_num=None, entropy_coef=0.01, critic=None, critic_optimizer=None,
+                    use_per_step_reward=True, per_step_weight=0.3):
     """
     Train using REINFORCE policy gradient with MOCU DIRECTLY as the loss.
     
     Args:
         entropy_coef: Entropy regularization coefficient (default 0.01)
                      Prevents policy from becoming too deterministic
+        use_per_step_reward: If True, compute MOCU at each step and reward per-step reductions
+                            This encourages early-step efficiency (fixes "wasting first steps" issue)
+        per_step_weight: Weight for per-step rewards (0.0-1.0, rest goes to terminal)
+                        e.g., 0.3 = 30% per-step, 70% terminal
     """
     from scripts.generate_dad_data import update_bounds
     
@@ -297,11 +302,27 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         action_probs_list = []  # Store action_probs for entropy computation
         observed_pairs = []
         observations_list = []
+        step_mocus = []  # Store MOCU at each step for per-step rewards
         
         a_lower = traj['states'][0][0].copy()
         a_upper = traj['states'][0][1].copy()
         
         K = len(traj['actions'])
+        
+        # Compute initial MOCU for per-step rewards
+        if use_per_step_reward:
+            if use_predicted_mocu and mocu_model is not None:
+                with torch.no_grad():
+                    initial_state_data = create_state_data(w, a_lower, a_upper, device=device)
+                    initial_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+                    if isinstance(initial_MOCU, torch.Tensor):
+                        initial_MOCU = initial_MOCU.detach().cpu().item()
+                    initial_MOCU = float(initial_MOCU)
+                step_mocus.append(initial_MOCU)
+            else:
+                # Can't compute per-step without MPNN predictor
+                use_per_step_reward = False
+                step_mocus.append(None)
         
         for step in range(K):
             # === POLICY NETWORK FORWARD PASS ===
@@ -349,6 +370,16 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
             observations_list.append(observation)
             log_probs.append(log_prob)
             
+            # Compute MOCU at this step for per-step rewards
+            if use_per_step_reward and use_predicted_mocu and mocu_model is not None:
+                with torch.no_grad():
+                    step_state_data = create_state_data(w, a_lower, a_upper, device=device)
+                    step_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+                    if isinstance(step_MOCU, torch.Tensor):
+                        step_MOCU = step_MOCU.detach().cpu().item()
+                    step_MOCU = float(step_MOCU)
+                step_mocus.append(step_MOCU)
+            
             # Only synchronize if CUDA_LAUNCH_BLOCKING is enabled (debugging mode)
             # For production, let CUDA operations run asynchronously
             if torch.cuda.is_available() and CUDA_LAUNCH_BLOCKING == '1':
@@ -380,7 +411,36 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         # Convert to float and ensure it's detached from any computation graph
         if isinstance(terminal_MOCU, torch.Tensor):
             terminal_MOCU = terminal_MOCU.detach().cpu().item()
-        reward = float(-terminal_MOCU)
+        terminal_MOCU = float(terminal_MOCU)
+        
+        # === PER-STEP REWARD METHOD ===
+        # Compute rewards at each step to encourage early-step efficiency
+        if use_per_step_reward and len(step_mocus) == K + 1 and all(m is not None for m in step_mocus):
+            # Compute per-step rewards: reward_i = -(MOCU_i - MOCU_{i-1})
+            per_step_rewards = []
+            for i in range(1, len(step_mocus)):
+                mocu_reduction = step_mocus[i-1] - step_mocus[i]  # Positive reduction = good
+                step_reward = -mocu_reduction  # Negative because we want to minimize MOCU
+                per_step_rewards.append(step_reward)
+            
+            # Total per-step reward (sum of all step reductions)
+            total_per_step_reward = sum(per_step_rewards)
+            
+            # Terminal reward
+            terminal_reward = -terminal_MOCU
+            
+            # Weighted combination: per_step_weight * per_step + (1-weight) * terminal
+            # This gives explicit credit to early steps while still optimizing terminal MOCU
+            reward = (per_step_weight * total_per_step_reward + 
+                     (1.0 - per_step_weight) * terminal_reward)
+            
+            # Store per-step rewards for step-wise advantages
+            step_rewards_list = per_step_rewards
+        else:
+            # Fallback: terminal reward only (original method)
+            reward = float(-terminal_MOCU)
+            step_rewards_list = None
+        
         reward_list.append(reward)
         all_rewards.append(reward)
         
@@ -405,6 +465,17 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         if critic_baseline is not None:
             # Use critic as baseline (iDAD approach - reduces variance)
             advantage = float(reward - critic_baseline)
+            
+            # CRITICAL: If advantage is too small, the learning signal is lost
+            # Add minimum advantage magnitude to maintain gradient signal
+            min_advantage_magnitude = 0.1
+            if abs(advantage) < min_advantage_magnitude:
+                # Scale advantage to maintain learning signal
+                if advantage >= 0:
+                    advantage = min_advantage_magnitude
+                else:
+                    advantage = -min_advantage_magnitude
+            
             # Clip to prevent extreme values
             advantage = np.clip(advantage, -5.0, 5.0)
         elif len(all_rewards) >= 50:
@@ -430,6 +501,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                 advantage = 1.0  # Constant positive signal to encourage exploration
         else:
             # Not enough samples yet: use simple baseline or raw reward
+            # Calculate reward_std for variance check
+            reward_std = np.std(all_rewards) if len(all_rewards) > 1 else 0.0
+            
             # CRITICAL: If variance is extremely low, use constant advantage even early in training
             if reward_std < 1e-6:
                 # All rewards are identical: use constant advantage to maintain learning signal
@@ -449,7 +523,36 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                 advantage = float(reward) * 10.0  # Scale to maintain signal
                 advantage = np.clip(advantage, -5.0, 5.0)
         
-        returns = [advantage] * len(log_probs)
+        # === STEP-WISE ADVANTAGES (for per-step rewards) ===
+        # If using per-step rewards, compute step-wise advantages
+        if use_per_step_reward and step_rewards_list is not None and len(step_rewards_list) == len(log_probs):
+            # Compute step-wise advantages
+            if critic is not None:
+                # For critic baseline, we'd need step-wise critic estimates
+                # For now, use normalized step rewards as advantages
+                step_reward_mean = np.mean(step_rewards_list)
+                step_reward_std = np.std(step_rewards_list) if len(step_rewards_list) > 1 else 1.0
+                if step_reward_std > 1e-6:
+                    returns = [(sr - step_reward_mean) / step_reward_std for sr in step_rewards_list]
+                    returns = [np.clip(r, -5.0, 5.0) for r in returns]
+                else:
+                    # Low variance: use constant advantage
+                    returns = [advantage] * len(log_probs)
+            else:
+                # No critic: use normalized step rewards
+                if len(step_rewards_list) > 0:
+                    step_reward_mean = np.mean(step_rewards_list)
+                    step_reward_std = np.std(step_rewards_list) if len(step_rewards_list) > 1 else 1.0
+                    if step_reward_std > 1e-6:
+                        returns = [(sr - step_reward_mean) / step_reward_std for sr in step_rewards_list]
+                        returns = [np.clip(r, -5.0, 5.0) for r in returns]
+                    else:
+                        returns = [advantage] * len(log_probs)
+                else:
+                    returns = [advantage] * len(log_probs)
+        else:
+            # Standard: same advantage for all steps (terminal reward only)
+            returns = [advantage] * len(log_probs)
         
         # CRITICAL: Validate all log_probs tensors before building loss computation graph
         # This prevents invalid memory access during loss construction
@@ -542,8 +645,23 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                 total_entropy = entropy_loss[0]
                 for ent in entropy_loss[1:]:
                     total_entropy = total_entropy + ent
+                
+                # CRITICAL: Scale entropy by number of steps to make it comparable to policy loss
+                # Without scaling, entropy for K steps is K times larger, making it dominate
+                avg_entropy = total_entropy / len(entropy_loss) if len(entropy_loss) > 0 else total_entropy
+                
+                # Apply minimum entropy constraint: if entropy drops too low, increase bonus
+                min_entropy_threshold = 0.01
+                if avg_entropy < min_entropy_threshold:
+                    # Boost entropy coefficient when entropy is too low
+                    entropy_boost = 1.0 + (min_entropy_threshold - avg_entropy) / min_entropy_threshold
+                    effective_entropy_coef = entropy_coef * entropy_boost
+                else:
+                    effective_entropy_coef = entropy_coef
+                
                 # Subtract entropy (we want to maximize it, so subtract from loss)
-                loss = loss - entropy_coef * total_entropy
+                # Use average entropy per step to keep scale consistent
+                loss = loss - effective_entropy_coef * total_entropy
             
             # Validate after accumulation
             assert isinstance(loss, torch.Tensor), "Loss is not a tensor after accumulation"
@@ -649,8 +767,9 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                     print("[REINFORCE] Could not query CUDA state")
             raise
         
-        # Gradient clipping: prevent exploding gradients (increased from 1.0 to 2.0 for more stable training)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+        # Gradient clipping: prevent exploding gradients (reduced to 1.0 for more stable training)
+        # Lower max_norm helps prevent divergence when learning rate is high
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         # === TRAIN CRITIC (iDAD-inspired) ===
@@ -667,14 +786,15 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                 history_tensor = None
             
             mocu_estimate = critic(final_state_data, history_tensor)  # [1]
-            target_mocu = torch.tensor(terminal_MOCU, dtype=torch.float32, device=device)
+            # Ensure target_mocu has same shape as mocu_estimate ([1] not [])
+            target_mocu = torch.tensor([terminal_MOCU], dtype=torch.float32, device=device)
             
             # Critic loss: MSE between predicted and actual MOCU
             critic_loss = F.mse_loss(mocu_estimate, target_mocu)
             critic_loss.backward()
             
-            # Gradient clipping for critic
-            torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=2.0)
+            # Gradient clipping for critic (reduced to 1.0 for stability)
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
             critic_optimizer.step()
         
         # REMOVED: torch.cuda.synchronize() after optimizer step
@@ -751,12 +871,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
 def main():
     parser = argparse.ArgumentParser(description='Train DAD policy network')
     parser.add_argument('--data-path', type=str, required=True, help='Path to trajectory data')
-    parser.add_argument('--method', type=str, default='reinforce', 
-                       choices=['imitation', 'reinforce'], 
-                       help='Training method: "reinforce" (RL, uses MOCU directly) or "imitation" (behavior cloning)')
+    parser.add_argument('--method', type=str, default='dad_mocu', 
+                       choices=['imitation', 'reinforce', 'dad_mocu', 'idad_mocu'], 
+                       help='Training method: "dad_mocu" (no critic, simple baseline), "idad_mocu" (with critic from scratch), "reinforce" (legacy), or "imitation" (behavior cloning)')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
-    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate (default: 1e-4, matching original DAD)')
+    parser.add_argument('--lr', type=float, default=0.00001, help='Learning rate (default: 1e-5, reduced for stability)')
     parser.add_argument('--hidden-dim', type=int, default=256, help='Hidden dimension (default: 256, matching original DAD)')
     parser.add_argument('--encoding-dim', type=int, default=16, help='Encoding dimension (default: 16, matching original DAD)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
@@ -765,10 +885,26 @@ def main():
     parser.add_argument('--use-predicted-mocu', action='store_true',
                        help='Use MPNN predictor for fast MOCU estimation (recommended). Requires trained MPNN model.')
     parser.add_argument('--use-critic', action='store_true',
-                       help='Use critic network for variance reduction (iDAD-inspired). Recommended for implicit models.')
+                       help='Use critic network for variance reduction (iDAD-inspired). Auto-enabled for idad_mocu method.')
     parser.add_argument('--critic-lr', type=float, default=None,
                        help='Learning rate for critic (default: same as policy lr)')
     args = parser.parse_args()
+    
+    # Map method names to critic usage
+    if args.method == 'idad_mocu':
+        # iDAD-MOCU: Use critic (learns from scratch, no MPNN)
+        args.use_critic = True
+        print("[METHOD] Using iDAD-MOCU: with critic network (learns from scratch)")
+    elif args.method == 'dad_mocu':
+        # DAD-MOCU: No critic, use simple baseline
+        args.use_critic = False
+        print("[METHOD] Using DAD-MOCU: no critic, simple baseline")
+    elif args.method == 'reinforce':
+        # Legacy: Use --use-critic flag if provided
+        print("[METHOD] Using legacy REINFORCE method")
+    
+    # Both dad_mocu and idad_mocu use per-step rewards by default
+    use_per_step_reward_default = args.method in ['dad_mocu', 'idad_mocu']
     
     # Load data
     print("Loading trajectory data...")
@@ -810,58 +946,31 @@ def main():
     mpnn_model = None
     mpnn_mean = None
     mpnn_std = None
-    if args.use_critic:
-        try:
-            from src.models.predictors.predictor_utils import load_mpnn_predictor
-            import os
-            from pathlib import Path
-            
-            # Get model name from environment variable, config, or auto-detect
-            model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name')
-            
-            # Auto-detect from output_dir if not provided
-            if not model_name and args.output_dir:
-                output_path = Path(args.output_dir).resolve()
-                parts = output_path.parts
-                try:
-                    models_idx = list(parts).index('models')
-                    if models_idx + 1 < len(parts):
-                        model_name = parts[models_idx + 1]
-                        print(f"[Critic] Auto-detected MPNN model name: {model_name}")
-                except (ValueError, IndexError):
-                    pass
-            
-            # Last resort: try default name format
-            if not model_name:
-                model_name = f'cons{N}'
-                print(f"[Critic] Using default MPNN model name: {model_name}")
-            
-            print(f"[Critic] Loading MPNN predictor: {model_name}")
-            mpnn_model, mpnn_mean, mpnn_std = load_mpnn_predictor(model_name=model_name, device=str(device))
-            mpnn_model.eval()
-            mpnn_model = mpnn_model.to(device)
-            print(f"[Critic] Successfully loaded MPNN predictor: {model_name}")
-        except Exception as e:
-            print(f"[Critic] Warning: Could not load MPNN predictor: {e}")
-            print(f"[Critic] Critic will work without MPNN (less accurate baseline)")
-            mpnn_model = None
-            mpnn_mean = None
-            mpnn_std = None
+    # NOTE: MPNN loading is handled separately for per-step rewards (if needed)
+    # We intentionally do NOT load MPNN for the critic (see critic initialization below)
+    # MPNN is still used for pre-computed rewards (terminal_MOCU) and per-step rewards
+    # but NOT for the critic baseline to prevent vanishing advantages
     
     # Create critic network (iDAD-inspired for variance reduction)
-    # Enhanced with pre-trained MPNN predictor for better MOCU estimation
+    # SOLUTION 2: Critic WITHOUT MPNN to prevent it from becoming too accurate
+    # - MPNN is still used for pre-computed rewards (terminal_MOCU) - GOOD
+    # - Critic learns from scratch (no MPNN) - prevents vanishing advantages
+    # - Critic will be less accurate than MPNN, providing good advantage signal
     critic = None
     critic_optimizer = None
     if args.use_critic:
         from src.models.critics import MOCUCritic
+        # Intentionally set mpnn_model=None to prevent critic from being too accurate
+        # This ensures advantages don't vanish (advantage = reward - critic)
+        # MPNN is still used for pre-computed rewards, just not in critic baseline
         critic = MOCUCritic(
             N=N,
             hidden_dim=args.hidden_dim,
             encoding_dim=args.encoding_dim,
             use_set_equivariant=False,  # Use LSTM encoder (order-dependent, necessary when order matters)
-            mpnn_model=mpnn_model,  # Pre-trained MPNN model (frozen)
-            mpnn_mean=mpnn_mean,  # Normalization mean
-            mpnn_std=mpnn_std  # Normalization std
+            mpnn_model=None,  # Intentionally None - critic learns from scratch
+            mpnn_mean=None,  # Not needed when mpnn_model is None
+            mpnn_std=None  # Not needed when mpnn_model is None
         )
         critic = critic.to(device)
         print(f"Critic parameters: {sum(p.numel() for p in critic.parameters()):,}")
@@ -870,10 +979,10 @@ def main():
         critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
         print(f"Using critic network for variance reduction (iDAD-inspired)")
         print(f"  Critic LR: {critic_lr}")
-        if mpnn_model is not None:
-            print(f"  Pre-trained MPNN: Enabled (using existing trained model)")
-        else:
-            print(f"  Pre-trained MPNN: Not available (critic will use fallback)")
+        print(f"  Pre-trained MPNN: DISABLED in critic (intentional)")
+        print(f"    → Critic learns from scratch (no MPNN)")
+        print(f"    → Critic will be less accurate → good advantage signal")
+        print(f"    → MPNN still used for pre-computed rewards (terminal_MOCU)")
     
     # Optimizer with learning rate scheduling
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -956,7 +1065,7 @@ def main():
             epoch_pbar.set_postfix({'loss': f'{loss:.4f}', 'acc': f'{acc:.4f}', 
                                    'time': f'{time.time()-start_time:.1f}s'})
         
-        elif args.method == 'reinforce':
+        elif args.method in ['reinforce', 'dad_mocu', 'idad_mocu']:
             # Get K_max from config or use default
             K_max = config.get('K_max', 20480)
             
@@ -968,15 +1077,29 @@ def main():
             # Check if trajectories have pre-computed MOCU
             has_precomputed_mocu = any('terminal_MOCU' in traj for traj in trajectories)
             
+            # CRITICAL: For per-step rewards, we NEED MPNN predictor even if terminal MOCU is pre-computed
+            # Per-step rewards require computing MOCU at each step, which needs the predictor
+            # Both dad_mocu and idad_mocu use per-step rewards by default
+            if args.method in ['dad_mocu', 'idad_mocu']:
+                enable_per_step_reward = True  # Always enable for new methods
+                print(f"[{args.method.upper()}] Per-step rewards enabled (default for this method)")
+            else:
+                enable_per_step_reward = True  # Enable per-step rewards to fix "wasting first steps"
+            
             if has_precomputed_mocu:
-                print("[REINFORCE] Using pre-computed MOCU values")
-                use_predicted_mocu = False  # Don't use predictor if pre-computed values exist
+                print("[REINFORCE] Using pre-computed terminal MOCU values")
+                if enable_per_step_reward:
+                    print("[REINFORCE] Per-step rewards enabled - will load MPNN predictor for intermediate MOCU")
+                    use_predicted_mocu = True  # Need predictor for per-step rewards
+                else:
+                    use_predicted_mocu = False  # Don't need predictor if only using terminal MOCU
             else:
                 # No pre-computed MOCU - need to use MPNN predictor during training
                 print("[REINFORCE] No pre-computed MOCU - will use MPNN predictor during training")
+                use_predicted_mocu = True
             
             # Auto-enable MPNN predictor if not explicitly disabled
-            use_predicted_mocu = args.use_predicted_mocu if args.use_predicted_mocu else True
+            use_predicted_mocu = args.use_predicted_mocu if args.use_predicted_mocu else use_predicted_mocu
             
             if not use_predicted_mocu and not has_precomputed_mocu:
                 print("\n" + "!"*80)
@@ -984,7 +1107,10 @@ def main():
                 print("         Direct MOCU computation is slow - use --use-predicted-mocu for faster training")
                 print("!"*80 + "\n")
             if use_predicted_mocu:
-                if has_precomputed_mocu:
+                # Load MPNN predictor (needed for per-step rewards OR if no pre-computed MOCU)
+                # Always load if per-step rewards are enabled (even with pre-computed terminal MOCU)
+                if has_precomputed_mocu and not enable_per_step_reward:
+                    # Only terminal MOCU needed, predictor not required
                     mocu_model = None
                 else:
                     try:
@@ -1089,11 +1215,21 @@ def main():
                         print(f"!"*80 + "\n")
                         import traceback
                         traceback.print_exc()
-                    raise RuntimeError(
-                        f"MPNN predictor is REQUIRED for REINFORCE training. "
-                        f"Failed to load MPNN predictor '{model_name}'. "
-                        f"Please check model path and train MPNN first."
-                    ) from e
+                        raise RuntimeError(
+                            f"MPNN predictor is REQUIRED for REINFORCE training. "
+                            f"Failed to load MPNN predictor '{model_name}'. "
+                            f"Please check model path and train MPNN first."
+                        ) from e
+            
+            # Entropy scheduling: start high, decay slowly to maintain exploration
+            # Start at 1.0, decay to 0.7 over epochs (prevents early collapse, maximum exploration)
+            initial_entropy = 1.0
+            final_entropy = 0.7  # Increased from 0.5 to 0.7 to maintain more exploration
+            decay_epochs = args.epochs * 0.8  # Decay over 80% of training (slower decay)
+            if epoch < decay_epochs:
+                current_entropy = initial_entropy - (initial_entropy - final_entropy) * (epoch / decay_epochs)
+            else:
+                current_entropy = final_entropy
             
             loss, reward = train_reinforce(
                 model, trajectories, optimizer, device, N, 
@@ -1103,12 +1239,53 @@ def main():
                 mocu_std=mocu_std,
                 use_predicted_mocu=use_predicted_mocu,
                 epoch_num=epoch,
-                entropy_coef=0.15,  # Increased significantly to prevent policy collapse (was 0.05, still collapsing)
+                entropy_coef=current_entropy,  # Scheduled entropy: starts at 0.5, decays to 0.3
                 critic=critic,
-                critic_optimizer=critic_optimizer
+                critic_optimizer=critic_optimizer,
+                use_per_step_reward=True,  # Enable per-step rewards to fix "wasting first steps"
+                per_step_weight=0.3  # 30% per-step, 70% terminal
             )
             train_losses.append(loss)
             current_loss = train_losses[-1]
+            
+            # Warn if loss is increasing (divergence) and automatically reduce LR
+            if len(train_losses) > 5:
+                recent_trend = train_losses[-5:]
+                if all(recent_trend[i] > recent_trend[i-1] for i in range(1, len(recent_trend))):
+                    if not hasattr(main, '_divergence_warned'):
+                        print(f"\n⚠️  [EPOCH {epoch + 1}] WARNING: Loss is INCREASING (diverging)!")
+                        print(f"   Recent trend: {[f'{x:.6f}' for x in recent_trend]}")
+                        print(f"   This indicates training instability.")
+                        print(f"   Automatically reducing learning rate by 50%...")
+                        
+                        # Reduce learning rate by 50% for both policy and critic
+                        for param_group in optimizer.param_groups:
+                            old_lr = param_group['lr']
+                            param_group['lr'] = old_lr * 0.5
+                            print(f"   Policy LR: {old_lr:.2e} → {param_group['lr']:.2e}")
+                        
+                        if critic_optimizer is not None:
+                            for param_group in critic_optimizer.param_groups:
+                                old_lr = param_group['lr']
+                                param_group['lr'] = old_lr * 0.5
+                                print(f"   Critic LR: {old_lr:.2e} → {param_group['lr']:.2e}")
+                        
+                        main._divergence_warned = True
+                    elif not hasattr(main, '_divergence_lr_reduced'):
+                        # If divergence continues, reduce LR again
+                        print(f"\n⚠️  [EPOCH {epoch + 1}] Divergence continues - reducing LR again...")
+                        for param_group in optimizer.param_groups:
+                            old_lr = param_group['lr']
+                            param_group['lr'] = old_lr * 0.5
+                            print(f"   Policy LR: {old_lr:.2e} → {param_group['lr']:.2e}")
+                        
+                        if critic_optimizer is not None:
+                            for param_group in critic_optimizer.param_groups:
+                                old_lr = param_group['lr']
+                                param_group['lr'] = old_lr * 0.5
+                                print(f"   Critic LR: {old_lr:.2e} → {param_group['lr']:.2e}")
+                        
+                        main._divergence_lr_reduced = True
             
             # Warn if loss is approaching zero (policy collapse)
             if abs(current_loss) < 0.001:

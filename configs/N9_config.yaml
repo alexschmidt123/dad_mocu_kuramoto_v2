@@ -33,16 +33,14 @@ experiment:
   it_idx: 10           # MOCU averaging iterations
   K_max: 20480
   methods:
-    - "RANDOM"    # PyCUDA methods FIRST
+    - "RANDOM"             # PyCUDA methods FIRST
     - "ENTROPY"
     - "ODE"
-    - "iNN"       # PyTorch methods AFTER
+    - "iNN"                # PyTorch methods AFTER
     - "NN"
-    - "DAD"
-  
-  # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
-  # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)
-  dad_method: "reinforce"  # REINFORCE directly optimizes terminal MOCU
+    - "REGRESSION_SCORER"  # Regression Scorer baseline
+    - "DAD_MOCU"           # DAD-MOCU (no critic, simple baseline, uses per-step rewards)
+    - "IDAD_MOCU"          # iDAD-MOCU (with critic from scratch, uses per-step rewards)
 
 # DAD policy training data generation
 dad_data:

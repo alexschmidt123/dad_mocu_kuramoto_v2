@@ -29,6 +29,8 @@ if __name__ == '__main__':
                         help='Path to baseline results folder (contains initial MOCU info)')
     parser.add_argument('--result_folder', type=str, default=None,
                         help='Result folder for DAD results (default: baseline_results)')
+    parser.add_argument('--method_name', type=str, default='DAD',
+                        help='Method name for output files (default: DAD, options: DAD_MOCU, IDAD_MOCU)')
     args = parser.parse_args()
     
     # ========== Configuration ==========
@@ -53,6 +55,7 @@ if __name__ == '__main__':
     result_folder.mkdir(parents=True, exist_ok=True)
     
     print(f"DAD Evaluation Configuration:")
+    print(f"  Method: {args.method_name}")
     print(f"  N={N}, update_cnt={update_cnt}, it_idx={it_idx}, K_max={K_max}")
     print(f"  num_simulations={numberOfSimulationsPerMethod}")
     print(f"  result_folder={result_folder}")
@@ -65,10 +68,17 @@ if __name__ == '__main__':
     TReal = 5
     MReal = int(TReal / deltaT)
     
-    # Natural frequencies
-    w = np.array([-2.5000, -0.6667, 1.1667, 2.0000, 5.8333])
+    # ========== Load system parameters from baseline results ==========
+    # Load natural frequencies (should be same as baselines)
+    w_file = baseline_results / 'paramNaturalFrequencies.txt'
+    if w_file.exists():
+        w = np.loadtxt(w_file)
+        print(f"Loaded natural frequencies from baseline results: {w}")
+    else:
+        # Fallback to hardcoded values (should not happen if baselines were run first)
+        print("⚠️  Warning: paramNaturalFrequencies.txt not found, using hardcoded values")
+        w = np.array([-2.5000, -0.6667, 1.1667, 2.0000, 5.8333])
     
-    # ========== Load initial bounds and MOCU from baseline results ==========
     # Load initial bounds (should be same for all methods)
     aInitialUpper_file = baseline_results / 'paramInitialUpper.txt'
     aInitialLower_file = baseline_results / 'paramInitialLower.txt'
@@ -204,12 +214,13 @@ if __name__ == '__main__':
         )
         
         total_time = time.time() - method_start_time
-        print(f"DAD: Time={total_time:.1f}s, Final MOCU={MOCUCurve[-1]:.6f}")
+        print(f"{args.method_name}: Time={total_time:.1f}s, Final MOCU={MOCUCurve[-1]:.6f}")
         
-        # Save results
-        outMOCUFile = open(os.path.join(result_folder, 'DAD_MOCU.txt'), 'a')
-        outTimeFile = open(os.path.join(result_folder, 'DAD_timeComplexity.txt'), 'a')
-        outSequenceFile = open(os.path.join(result_folder, 'DAD_sequence.txt'), 'a')
+        # Save results with method name
+        method_prefix = args.method_name
+        outMOCUFile = open(os.path.join(result_folder, f'{method_prefix}_MOCU.txt'), 'a')
+        outTimeFile = open(os.path.join(result_folder, f'{method_prefix}_timeComplexity.txt'), 'a')
+        outSequenceFile = open(os.path.join(result_folder, f'{method_prefix}_sequence.txt'), 'a')
         
         np.savetxt(outMOCUFile, MOCUCurve.reshape(1, MOCUCurve.shape[0]), delimiter="\t")
         np.savetxt(outTimeFile, timeComplexity.reshape(1, timeComplexity.shape[0]), delimiter="\t")

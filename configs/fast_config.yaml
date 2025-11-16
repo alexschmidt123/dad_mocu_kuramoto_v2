@@ -36,15 +36,18 @@ experiment:
   it_idx: 3                # Minimal iterations (matches original fast_config)
   K_max: 1024              # Match dataset K_max (matches original fast_config)
   methods:
-    - "DAD"                # Deep Adaptive Design (baselines run separately in step 4)
-  
-  # DAD training method (default: "reinforce" - RL with direct MOCU optimization)
-  # Options: "reinforce" (RL, uses terminal MOCU directly as loss) or "imitation" (behavior cloning)
-  dad_method: "reinforce"  # REINFORCE directly optimizes terminal MOCU
+    - "RANDOM"             # PyCUDA methods FIRST
+    - "ENTROPY"
+    - "ODE"
+    - "iNN"                # PyTorch methods AFTER
+    - "NN"
+    - "REGRESSION_SCORER"  # Regression Scorer baseline
+    - "DAD_MOCU"           # DAD-MOCU (no critic, simple baseline, uses per-step rewards)
+    - "IDAD_MOCU"          # iDAD-MOCU (with critic from scratch, uses per-step rewards)
 
 # DAD policy training data generation
 dad_data:
-  num_episodes: 100        # Number of trajectories to generate (MINIMAL for testing)
+  num_episodes: 1000       # Number of trajectories to generate (increased for better training)
   K: 4                     # Number of sequential experiments per trajectory (4 design steps, aligns with experiment.update_count)
   use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended)
 

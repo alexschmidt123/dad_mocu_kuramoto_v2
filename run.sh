@@ -211,31 +211,36 @@ echo ""
 echo -e "${GREEN}[Step 3/6]${NC} Running baseline evaluation and visualization..."
 bash "${PROJECT_ROOT}/scripts/bash/step3_evaluate_baselines.sh" "$CONFIG_FILE"
 
-# Step 4: Generate DAD training data and train DAD policy (if DAD is in methods list)
+# Step 4: Generate DAD training data and train DAD policies (if DAD_MOCU or IDAD_MOCU is in methods list)
 # This runs AFTER baselines so DAD can use the same initial MOCU
-if echo "$METHODS" | grep -q "DAD"; then
+if echo "$METHODS" | grep -qE "(DAD_MOCU|IDAD_MOCU)"; then
     echo ""
-    echo -e "${GREEN}[Step 4/6]${NC} Generating DAD training data and training DAD policy..."
+    echo -e "${GREEN}[Step 4/6]${NC} Generating DAD training data and training DAD policies..."
+    DAD_METHODS_FOUND=$(echo "$METHODS" | grep -oE "(DAD_MOCU|IDAD_MOCU)" | tr '\n' ' ' || echo "")
+    echo -e "  ${BLUE}DAD methods to train: ${DAD_METHODS_FOUND}${NC}"
     bash "${PROJECT_ROOT}/scripts/bash/step4_train_dad.sh" "$CONFIG_FILE"
 else
     echo ""
-    echo -e "${BLUE}[Step 4/6]${NC} Skipping DAD (not in methods list)"
+    echo -e "${BLUE}[Step 4/6]${NC} Skipping DAD (DAD_MOCU/IDAD_MOCU not in methods list)"
 fi
 
-# Step 5: Evaluate DAD method (uses same initial MOCU as baselines)
-if echo "$METHODS" | grep -q "DAD"; then
+# Step 5: Evaluate DAD methods (uses same initial MOCU as baselines)
+# Evaluates DAD_MOCU and/or IDAD_MOCU if their policies exist
+if echo "$METHODS" | grep -qE "(DAD_MOCU|IDAD_MOCU)"; then
     echo ""
     echo -e "${GREEN}[Step 5/6]${NC} Running DAD evaluation (using baseline initial MOCU)..."
+    DAD_METHODS_FOUND=$(echo "$METHODS" | grep -oE "(DAD_MOCU|IDAD_MOCU)" | tr '\n' ' ' || echo "")
+    echo -e "  ${BLUE}DAD methods to evaluate: ${DAD_METHODS_FOUND}${NC}"
     bash "${PROJECT_ROOT}/scripts/bash/step5_evaluate_dad.sh" "$CONFIG_FILE"
 else
     echo ""
-    echo -e "${BLUE}[Step 5/6]${NC} Skipping DAD evaluation (not in methods list)"
+    echo -e "${BLUE}[Step 5/6]${NC} Skipping DAD evaluation (DAD_MOCU/IDAD_MOCU not in methods list)"
 fi
 
-# Step 6: Generate visualizations for all methods (baselines + DAD)
+# Step 6: Generate visualizations for all methods (baselines + DAD methods)
 echo ""
-if echo "$METHODS" | grep -q "DAD"; then
-    echo -e "${GREEN}[Step 6/6]${NC} Generating visualizations (all methods: baselines + DAD)..."
+if echo "$METHODS" | grep -qE "(DAD_MOCU|IDAD_MOCU)"; then
+    echo -e "${GREEN}[Step 6/6]${NC} Generating visualizations (all methods: baselines + DAD methods)..."
     bash "${PROJECT_ROOT}/scripts/bash/step6_visualize.sh" "$CONFIG_FILE"
 else
     echo -e "${BLUE}[Step 6/6]${NC} Skipping visualization (baseline-only plots already generated in Step 3)"

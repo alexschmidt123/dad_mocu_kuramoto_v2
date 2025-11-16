@@ -36,6 +36,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
+# Extract base config name (remove _K* suffix if present, since results folder doesn't use _K suffix)
+BASE_CONFIG_NAME=$(echo "$CONFIG_NAME" | sed 's/_K[0-9]*$//')
 N=$(grep "^N:" "$CONFIG_FILE" | awk '{print $2}')
 
 # K values to sweep (use command line args if provided, otherwise default)
@@ -83,23 +85,24 @@ echo "K Sweep Complete!"
 echo "=========================================="
 echo ""
 echo "Results for each K are in:"
-for K in "${K_VALUES[@]}"; do
-    RESULT_DIR="${PROJECT_ROOT}/results/${CONFIG_NAME}_K${K}/"
-    if [ -d "$RESULT_DIR" ]; then
-        LATEST=$(ls -td "${RESULT_DIR}"/*/ 2>/dev/null | head -1)
-        if [ -n "$LATEST" ]; then
-            echo "  K=$K: $LATEST"
-        else
-            echo "  K=$K: $RESULT_DIR (no timestamp folder found)"
-        fi
+# All K values share the same results folder (BASE_CONFIG_NAME)
+RESULT_DIR="${PROJECT_ROOT}/results/${BASE_CONFIG_NAME}/"
+if [ -d "$RESULT_DIR" ]; then
+    LATEST=$(ls -td "${RESULT_DIR}"/*/ 2>/dev/null | head -1)
+    if [ -n "$LATEST" ]; then
+        echo "  All K values: $LATEST"
+        echo "  (All K values share the same results folder)"
     else
-        echo "  K=$K: (not found)"
+        echo "  Results folder: $RESULT_DIR (no timestamp folder found)"
     fi
-done
+else
+    echo "  Results folder: $RESULT_DIR (not found)"
+fi
 echo ""
 echo "DAD models for each K are in:"
 for K in "${K_VALUES[@]}"; do
-    MODEL_DIR="${PROJECT_ROOT}/models/${CONFIG_NAME}/"
+    # Use BASE_CONFIG_NAME for model folder (all K values share same folder)
+    MODEL_DIR="${PROJECT_ROOT}/models/${BASE_CONFIG_NAME}/"
     MODEL_FILE="${MODEL_DIR}dad_policy_N${N}_K${K}.pth"
     if [ -f "$MODEL_FILE" ]; then
         echo "  K=$K: $MODEL_FILE"

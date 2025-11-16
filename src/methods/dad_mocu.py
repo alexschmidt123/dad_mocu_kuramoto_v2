@@ -73,7 +73,7 @@ class DAD_MOCU_Method(OEDMethod):
                 # Search for both patterns: with K and without K
                 for config_dir in models_root.iterdir():
                     if config_dir.is_dir():
-                        # Try pattern with K: dad_policy_N{N}_K{K}.pth
+                        # Try pattern with K: dad_policy_N{N}_K{K}*.pth (includes method suffix)
                         for k_file in config_dir.glob(f'dad_policy_N{self.N}_K*.pth'):
                             # Prefer best model if exists, otherwise regular model
                             if '_best.pth' in k_file.name:
