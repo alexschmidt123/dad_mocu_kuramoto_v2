@@ -1,6 +1,5 @@
 #!/bin/bash
-# Step 5: Evaluate DAD methods using same initial MOCU as baselines
-# Evaluates both DAD-MOCU and iDAD-MOCU methods if their policies exist
+# Step 6: Evaluate DAD methods and generate final visualizations
 
 set -e
 
@@ -14,8 +13,6 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
 CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
-
-# Get baseline results folder
 BASELINE_RESULTS=$(cat /tmp/baseline_results_folder_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 DAD_MOCU_POLICY_PATH=$(cat /tmp/dad_mocu_policy_path_${CONFIG_NAME}.txt 2>/dev/null || echo "")
 IDAD_MOCU_POLICY_PATH=$(cat /tmp/idad_mocu_policy_path_${CONFIG_NAME}.txt 2>/dev/null || echo "")
@@ -25,41 +22,28 @@ if [ -z "$BASELINE_RESULTS" ] || [ ! -d "$BASELINE_RESULTS" ]; then
     exit 1
 fi
 
-# Check which methods have trained policies
 HAS_DAD_MOCU=false
 HAS_IDAD_MOCU=false
-
-if [ -n "$DAD_MOCU_POLICY_PATH" ] && [ -f "$DAD_MOCU_POLICY_PATH" ]; then
-    HAS_DAD_MOCU=true
-fi
-
-if [ -n "$IDAD_MOCU_POLICY_PATH" ] && [ -f "$IDAD_MOCU_POLICY_PATH" ]; then
-    HAS_IDAD_MOCU=true
-fi
+[ -n "$DAD_MOCU_POLICY_PATH" ] && [ -f "$DAD_MOCU_POLICY_PATH" ] && HAS_DAD_MOCU=true
+[ -n "$IDAD_MOCU_POLICY_PATH" ] && [ -f "$IDAD_MOCU_POLICY_PATH" ] && HAS_IDAD_MOCU=true
 
 if [ "$HAS_DAD_MOCU" = false ] && [ "$HAS_IDAD_MOCU" = false ]; then
-    echo "Error: No DAD policies found. Run step4_train_dad.sh first."
-    echo "  Expected: /tmp/dad_mocu_policy_path_${CONFIG_NAME}.txt or /tmp/idad_mocu_policy_path_${CONFIG_NAME}.txt"
+    echo "Error: No DAD policies found. Run step5_train_dad_policy.sh first."
     exit 1
 fi
 
-# Parse config parameters
 N=$(grep "^N:" $CONFIG_FILE | awk '{print $2}')
 UPDATE_CNT=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "update_count:" | awk '{print $2}')
 IT_IDX=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "it_idx:" | awk '{print $2}')
 K_MAX=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "K_max:" | awk '{print $2}')
 NUM_SIMULATIONS=$(grep -A 10 "^experiment:" $CONFIG_FILE | grep "num_simulations:" | awk '{print $2}')
-
-# Validate and set defaults
 [ -z "$N" ] && N=5
 [ -z "$UPDATE_CNT" ] && UPDATE_CNT=10
 [ -z "$IT_IDX" ] && IT_IDX=10
 [ -z "$K_MAX" ] && K_MAX=20480
 [ -z "$NUM_SIMULATIONS" ] && NUM_SIMULATIONS=10
 
-# Use same result folder as baselines
 RESULT_FOLDER="$BASELINE_RESULTS"
-
 export RESULT_FOLDER="$RESULT_FOLDER"
 export EVAL_N="$N"
 export EVAL_UPDATE_CNT="$UPDATE_CNT"
@@ -67,14 +51,13 @@ export EVAL_IT_IDX="$IT_IDX"
 export EVAL_K_MAX="$K_MAX"
 export EVAL_NUM_SIMULATIONS="$NUM_SIMULATIONS"
 
-echo "Running DAD evaluation (Step 5/6)..."
+echo "Running DAD evaluation (Step 6/6)..."
 echo "  Using baseline results: $BASELINE_RESULTS"
 echo "  N=$N, update_cnt=$UPDATE_CNT, it_idx=$IT_IDX, K_max=$K_MAX, num_simulations=$NUM_SIMULATIONS"
 echo "  Results: $RESULT_FOLDER"
 
 cd "${PROJECT_ROOT}/scripts"
 
-# Evaluate DAD_MOCU if policy exists
 if [ "$HAS_DAD_MOCU" = true ]; then
     echo ""
     echo "Evaluating DAD_MOCU method..."
@@ -83,7 +66,6 @@ if [ "$HAS_DAD_MOCU" = true ]; then
     echo "✓ DAD_MOCU evaluation complete"
 fi
 
-# Evaluate IDAD_MOCU if policy exists
 if [ "$HAS_IDAD_MOCU" = true ]; then
     echo ""
     echo "Evaluating IDAD_MOCU method..."
@@ -92,6 +74,20 @@ if [ "$HAS_IDAD_MOCU" = true ]; then
     echo "✓ IDAD_MOCU evaluation complete"
 fi
 
+echo ""
+echo "Generating final visualizations..."
+ABS_RESULT_FOLDER=$(cd "$RESULT_FOLDER" && pwd)
+if [ "${ABS_RESULT_FOLDER: -1}" != "/" ]; then
+    ABS_RESULT_FOLDER="${ABS_RESULT_FOLDER}/"
+fi
+
+if [ -n "$UPDATE_CNT" ]; then
+    python3 visualize.py --N $N --update_cnt $UPDATE_CNT --result_folder "$ABS_RESULT_FOLDER"
+else
+    python3 visualize.py --N $N --result_folder "$ABS_RESULT_FOLDER"
+fi
+
+echo "✓ Final visualizations generated in $ABS_RESULT_FOLDER"
 echo ""
 echo "✓ DAD evaluation complete: $RESULT_FOLDER"
 

@@ -77,54 +77,58 @@ if ! [[ "$K_VALUE" =~ ^[0-9]+$ ]] || [ "$K_VALUE" -le 0 ]; then
     exit 1
 fi
 
-# Check if config already has the correct K value
-TMP_CONFIG_FILE=""
+# Create experiment directory structure and resolved config
+EXPERIMENTS_ROOT="${PROJECT_ROOT}/experiments"
+EXPERIMENT_NAME="${CONFIG_NAME}_${TIMESTAMP}"
+EXPERIMENT_DIR="${EXPERIMENTS_ROOT}/${EXPERIMENT_NAME}"
+mkdir -p "${EXPERIMENT_DIR}/dad_data" "${EXPERIMENT_DIR}/dad_models" "${EXPERIMENT_DIR}/logs" "${EXPERIMENT_DIR}/eval"
 
-# Only create temp config if K needs to be changed
-if [ "$CURRENT_UPDATE_COUNT" != "$K_VALUE" ] || [ "$CURRENT_DAD_K" != "$K_VALUE" ]; then
-    if [ -n "$2" ] || [ -n "${K_OVERRIDE:-}" ]; then
-        echo -e "${BLUE}K override: Setting K=$K_VALUE (config has update_count=$CURRENT_UPDATE_COUNT, dad_data.K=$CURRENT_DAD_K)${NC}"
-    else
-        echo -e "${BLUE}Using K=$K_VALUE from config${NC}"
-    fi
-    
-    # Create temporary config with updated K
-    TMP_DIR="${PROJECT_ROOT}/tmp_run_K${K_VALUE}_${CONFIG_NAME}"
-    mkdir -p "$TMP_DIR"
-    TMP_CONFIG_FILE="${TMP_DIR}/${CONFIG_NAME}_K${K_VALUE}.yaml"
-    
-    # Update K in config using Python
-    python3 << PYEOF
+export EXPERIMENT_DIR
+export EXP_DAD_DATA_DIR="${EXPERIMENT_DIR}/dad_data"
+export EXP_DAD_MODELS_DIR="${EXPERIMENT_DIR}/dad_models"
+export EXP_LOGS_DIR="${EXPERIMENT_DIR}/logs"
+export EXP_EVAL_DIR="${EXPERIMENT_DIR}/eval"
+
+WORKFLOW_LOG="${EXP_LOGS_DIR}/workflow.log"
+touch "$WORKFLOW_LOG"
+exec > >(tee -a "$WORKFLOW_LOG")
+exec 2>&1
+
+RESOLVED_CONFIG_PATH="${EXPERIMENT_DIR}/${CONFIG_NAME}.yaml"
+
+python3 << PYEOF
 import yaml
-import sys
+from pathlib import Path
 
 with open('$ORIGINAL_CONFIG_FILE', 'r') as f:
     config = yaml.safe_load(f)
 
-# Update experiment.update_count (this is K)
 if 'experiment' in config:
     config['experiment']['update_count'] = $K_VALUE
 
-# Update dad_data.K (should match update_count)
 if 'dad_data' in config:
     config['dad_data']['K'] = $K_VALUE
 
-# Write updated config (preserve order and formatting)
-with open('$TMP_CONFIG_FILE', 'w') as f:
+output_path = Path('$RESOLVED_CONFIG_PATH')
+with output_path.open('w') as f:
     yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-print(f"Created temporary config with K=$K_VALUE: $TMP_CONFIG_FILE")
+print(f"Wrote experiment config to {output_path}")
 PYEOF
-    
-    CONFIG_FILE="$TMP_CONFIG_FILE"
-    # Keep CONFIG_NAME as base name (no _K suffix) for folder structure
-    # The _K suffix is only in the temp config filename
-    echo -e "${BLUE}Using temporary config: $CONFIG_FILE${NC}"
-    echo ""
+
+ln -sf "$(basename "$RESOLVED_CONFIG_PATH")" "${EXPERIMENT_DIR}/config.yaml"
+
+CONFIG_FILE="$RESOLVED_CONFIG_PATH"
+
+if [ -n "$2" ] || [ -n "${K_OVERRIDE:-}" ]; then
+    echo -e "${BLUE}K override: Setting K=$K_VALUE (config had update_count=$CURRENT_UPDATE_COUNT, dad_data.K=$CURRENT_DAD_K)${NC}"
 else
-    echo -e "${BLUE}Using K=$K_VALUE from config (no override needed)${NC}"
-    echo ""
+    echo -e "${BLUE}Using K=$K_VALUE from config${NC}"
 fi
+
+echo -e "${BLUE}Experiment directory:${NC} $EXPERIMENT_DIR"
+echo -e "${BLUE}Logging to:${NC} $WORKFLOW_LOG"
+echo ""
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}MOCU-OED Experiment Workflow${NC}"
@@ -215,42 +219,21 @@ bash "${PROJECT_ROOT}/scripts/bash/step3_evaluate_baselines.sh" "$CONFIG_FILE"
 # This runs AFTER baselines so DAD can use the same initial MOCU
 if echo "$METHODS" | grep -qE "(DAD_MOCU|IDAD_MOCU)"; then
     echo ""
-    echo -e "${GREEN}[Step 4/6]${NC} Generating DAD training data and training DAD policies..."
-    DAD_METHODS_FOUND=$(echo "$METHODS" | grep -oE "(DAD_MOCU|IDAD_MOCU)" | tr '\n' ' ' || echo "")
-    echo -e "  ${BLUE}DAD methods to train: ${DAD_METHODS_FOUND}${NC}"
-    bash "${PROJECT_ROOT}/scripts/bash/step4_train_dad.sh" "$CONFIG_FILE"
+    echo -e "${GREEN}[Step 4/6]${NC} Generating DAD training data..."
+    bash "${PROJECT_ROOT}/scripts/bash/step4_generate_dad_data.sh" "$CONFIG_FILE"
+
+    echo ""
+    echo -e "${GREEN}[Step 5/6]${NC} Training DAD policies..."
+    bash "${PROJECT_ROOT}/scripts/bash/step5_train_dad_policy.sh" "$CONFIG_FILE"
+
+    echo ""
+    echo -e "${GREEN}[Step 6/6]${NC} Evaluating DAD methods and generating final visualizations..."
+    bash "${PROJECT_ROOT}/scripts/bash/step6_evaluate_dad.sh" "$CONFIG_FILE"
 else
     echo ""
-    echo -e "${BLUE}[Step 4/6]${NC} Skipping DAD (DAD_MOCU/IDAD_MOCU not in methods list)"
-fi
-
-# Step 5: Evaluate DAD methods (uses same initial MOCU as baselines)
-# Evaluates DAD_MOCU and/or IDAD_MOCU if their policies exist
-if echo "$METHODS" | grep -qE "(DAD_MOCU|IDAD_MOCU)"; then
-    echo ""
-    echo -e "${GREEN}[Step 5/6]${NC} Running DAD evaluation (using baseline initial MOCU)..."
-    DAD_METHODS_FOUND=$(echo "$METHODS" | grep -oE "(DAD_MOCU|IDAD_MOCU)" | tr '\n' ' ' || echo "")
-    echo -e "  ${BLUE}DAD methods to evaluate: ${DAD_METHODS_FOUND}${NC}"
-    bash "${PROJECT_ROOT}/scripts/bash/step5_evaluate_dad.sh" "$CONFIG_FILE"
-else
-    echo ""
-    echo -e "${BLUE}[Step 5/6]${NC} Skipping DAD evaluation (DAD_MOCU/IDAD_MOCU not in methods list)"
-fi
-
-# Step 6: Generate visualizations for all methods (baselines + DAD methods)
-echo ""
-if echo "$METHODS" | grep -qE "(DAD_MOCU|IDAD_MOCU)"; then
-    echo -e "${GREEN}[Step 6/6]${NC} Generating visualizations (all methods: baselines + DAD methods)..."
-    bash "${PROJECT_ROOT}/scripts/bash/step6_visualize.sh" "$CONFIG_FILE"
-else
-    echo -e "${BLUE}[Step 6/6]${NC} Skipping visualization (baseline-only plots already generated in Step 3)"
-fi
-
-# Cleanup temporary config if created
-if [ -n "$TMP_CONFIG_FILE" ] && [ -f "$TMP_CONFIG_FILE" ]; then
-    TMP_DIR=$(dirname "$TMP_CONFIG_FILE")
-    rm -rf "$TMP_DIR"
-    echo -e "${BLUE}Cleaned up temporary config${NC}"
+    echo -e "${BLUE}[Step 4/6]${NC} Skipping DAD data generation (DAD_MOCU/IDAD_MOCU not in methods list)"
+    echo -e "${BLUE}[Step 5/6]${NC} Skipping DAD policy training"
+    echo -e "${BLUE}[Step 6/6]${NC} Skipping DAD evaluation/visualization"
 fi
 
 # Summary
@@ -260,8 +243,5 @@ echo -e "${GREEN}✓ Workflow Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Results:${NC}"
-RESULT_RUN_FOLDER=$(ls -td ${PROJECT_ROOT}/results/${CONFIG_NAME}/*/ 2>/dev/null | head -1)
-if [ -n "$RESULT_RUN_FOLDER" ]; then
-    echo "  $RESULT_RUN_FOLDER"
-fi
+echo "  $EXPERIMENT_DIR"
 echo ""

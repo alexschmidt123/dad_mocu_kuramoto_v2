@@ -125,9 +125,9 @@ dad_mocu_kuramoto_v2/
 │   ├── step1_generate_mocu_data.sh
 │   ├── step2_train_mpnn.sh
 │   ├── step3_evaluate_baselines.sh
-│   ├── step4_train_dad.sh
-│   ├── step5_evaluate_dad.sh
-│   └── step6_visualize.sh
+│   ├── step4_generate_dad_data.sh
+│   ├── step5_train_dad_policy.sh
+│   └── step6_evaluate_dad.sh
 │
 ├── src/
 │   ├── methods/                    # OED selection methods
@@ -157,9 +157,10 @@ dad_mocu_kuramoto_v2/
 │   └── utils/
 │       └── utils.py
 │
-├── models/                      # Saved trained models
-├── data/                        # Generated datasets
-├── results/                     # Experiment results
+├── experiments/                 # Self-contained run artifacts (new layout)
+├── models/                      # Shared pretrained predictors (MPNN, etc.)
+├── data/                        # Shared datasets (global, e.g., MPNN data)
+├── results/                     # Legacy experiment outputs (deprecated)
 ├── run.sh                       # Main automation script
 └── run_sweepK.sh                # K sweep automation script
 ```
@@ -225,6 +226,30 @@ This will:
 - Save results in separate folders: `results/N5_config_K4/`, `results/N5_config_K6/`, etc.
 - Save DAD models with K in filename: `dad_policy_N5_K4.pth`, `dad_policy_N5_K6.pth`, etc.
 - Reuse MOCU data and MPNN models (they don't depend on K)
+
+## Experiment Layout (`experiments/<config>_<timestamp>/`)
+
+Running `bash run.sh configs/N5_config.yaml` now creates a dedicated experiment directory:
+
+```
+experiments/N5_config_20250117_120301/
+├── config.yaml        # resolved config (with overrides applied)
+├── dad_data/          # per-run trajectory `.pth` files
+├── dad_models/        # DAD/IDAD checkpoints, curves, metrics
+├── logs/              # workflow.log (stdout/stderr, can store TB/W&B runs)
+└── eval/              # baseline + DAD evaluation artifacts (plots/CSVs)
+```
+
+All pipeline steps invoked via `run.sh` automatically write inside this folder:
+
+1. **Trajectory generation** writes to `dad_data/`
+2. **DAD/IDAD training** saves checkpoints and metrics to `dad_models/`
+3. **Stdout/stderr** from the workflow is mirrored to `logs/workflow.log`
+4. **Baseline + DAD evaluations** drop results in `eval/`
+
+Shared assets remain under `data/` (MPNN datasets) and `models/` (MPNN predictors) so they can be reused across experiments. Legacy runs under `results/` stay intact, but new runs are self-contained in `experiments/`.
+
+If you execute individual scripts manually (outside `run.sh`), point their `--output-dir` / `--data-path` arguments to the appropriate subfolders inside your desired `experiments/<name>/` directory to keep the layout consistent.
 
 ### Component Verification (3-5 minutes) ⚡
 

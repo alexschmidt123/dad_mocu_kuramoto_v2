@@ -143,16 +143,27 @@ if __name__ == '__main__':
     while numberOfVaildSimulations < numberOfSimulationsPerMethod:
         sim_pbar.set_description(f"Simulation {numberOfVaildSimulations + 1}/{numberOfSimulationsPerMethod}")
         
-        # Generate random coupling strengths (same as baseline evaluation)
-        randomState = np.random.RandomState(int(numberOfSimulations))
-        a = np.zeros((N, N))
-        for i in range(N):
-            for j in range(i + 1, N):
-                randomNumber = randomState.uniform()
-                a[i, j] = aInitialLower[i, j] + randomNumber * (aInitialUpper[i, j] - aInitialLower[i, j])
-                a[j, i] = a[i, j]
+        # CRITICAL: Load coupling strengths from baseline results to ensure SAME simulations
+        # This ensures DAD/iDAD use EXACTLY the same initial conditions as baselines
+        # → Same initial MOCU values for fair comparison
+        coupling_file = baseline_results / f'paramCouplingStrength{numberOfVaildSimulations}.txt'
         
-        numberOfSimulations += 1
+        if coupling_file.exists():
+            # Load coupling strengths from baseline results (ensures same simulation)
+            a = np.loadtxt(coupling_file)
+            print(f'  ✓ Loaded coupling strengths from baseline: {coupling_file.name}')
+        else:
+            # Fallback: Generate new coupling strengths (should not happen if baselines run first)
+            print(f'  ⚠️  Warning: Baseline coupling file not found: {coupling_file.name}')
+            print(f'     Generating new coupling strengths (may cause different initial MOCU)')
+            randomState = np.random.RandomState(int(numberOfSimulations))
+            a = np.zeros((N, N))
+            for i in range(N):
+                for j in range(i + 1, N):
+                    randomNumber = randomState.uniform()
+                    a[i, j] = aInitialLower[i, j] + randomNumber * (aInitialUpper[i, j] - aInitialLower[i, j])
+                    a[j, i] = a[i, j]
+            numberOfSimulations += 1
         
         # Check if system is already synchronized
         init_sync_check = determineSyncN(w, deltaT, N, MReal, a)
@@ -180,25 +191,35 @@ if __name__ == '__main__':
         coupling_file = os.path.join(result_folder, f'paramCouplingStrength{numberOfVaildSimulations}.txt')
         np.savetxt(coupling_file, a, fmt='%.64e')
         
-        # ========== Compute initial MOCU for this simulation ==========
-        # CRITICAL: Compute initial MOCU per simulation (matches baseline evaluation)
-        # This ensures fair comparison - each simulation has its own initial MOCU
-        timeMOCU = time.time()
-        it_temp_val = np.zeros(it_idx)
+        # ========== Load initial MOCU from baseline results ==========
+        # CRITICAL: Use EXACT same initial MOCU as baselines for fair comparison
+        # Initial MOCU is a property of the problem, not the method
+        # Using same value ensures identical starting conditions
+        initial_mocu_file = baseline_results / f'initial_MOCU_{numberOfVaildSimulations}.txt'
         
-        with tqdm(total=it_idx, desc="  Initial MOCU", leave=False, unit="iter", ncols=80, mininterval=0.5) as pbar:
-            for l in range(it_idx):
-                if use_pycuda:
-                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
-                                                  aInitialLower.copy(), aInitialUpper.copy(), 0)
-                else:
-                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
-                                                  aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
-                pbar.update(1)
-        
-        MOCUInitial = np.mean(it_temp_val)
-        elapsed = time.time() - timeMOCU
-        sim_pbar.write(f'  Initial MOCU: {MOCUInitial:.6f} ({elapsed:.1f}s)')
+        if initial_mocu_file.exists():
+            # Load initial MOCU from baseline results (ensures exact match)
+            MOCUInitial = float(np.loadtxt(initial_mocu_file))
+            sim_pbar.write(f'  ✓ Loaded initial MOCU from baseline: {MOCUInitial:.6f}')
+        else:
+            # Fallback: Compute initial MOCU (should not happen if baselines run first)
+            sim_pbar.write(f'  ⚠️  Warning: Baseline initial MOCU not found, computing new...')
+            timeMOCU = time.time()
+            it_temp_val = np.zeros(it_idx)
+            
+            with tqdm(total=it_idx, desc="  Initial MOCU", leave=False, unit="iter", ncols=80, mininterval=0.5) as pbar:
+                for l in range(it_idx):
+                    if use_pycuda:
+                        it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                      aInitialLower.copy(), aInitialUpper.copy(), 0)
+                    else:
+                        it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                      aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
+                    pbar.update(1)
+            
+            MOCUInitial = np.mean(it_temp_val)
+            elapsed = time.time() - timeMOCU
+            sim_pbar.write(f'  Initial MOCU: {MOCUInitial:.6f} ({elapsed:.1f}s)')
         
         # ========== Run DAD method ==========
         method_start_time = time.time()

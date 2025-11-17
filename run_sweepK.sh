@@ -5,7 +5,8 @@
 # Example: bash run_sweepK.sh configs/N5_config.yaml
 #          bash run_sweepK.sh configs/N5_config.yaml 4 6 8 10
 
-set -e
+# Don't use set -e here - we want to continue even if one K fails
+# set -e
 
 # Get script directory and determine project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +41,9 @@ CONFIG_NAME=$(basename "$CONFIG_FILE" .yaml)
 BASE_CONFIG_NAME=$(echo "$CONFIG_NAME" | sed 's/_K[0-9]*$//')
 N=$(grep "^N:" "$CONFIG_FILE" | awk '{print $2}')
 
+# Track experiment directories created during sweep
+declare -a SWEEP_EXPERIMENTS=()
+
 # K values to sweep (use command line args if provided, otherwise default)
 if [ $# -gt 1 ]; then
     shift  # Remove config_file from args
@@ -60,6 +64,9 @@ echo "This will run: bash run.sh $CONFIG_FILE <K> for each K value"
 echo ""
 
 # Run run.sh for each K value
+EXPERIMENTS_DIR="${PROJECT_ROOT}/experiments"
+mkdir -p "$EXPERIMENTS_DIR"
+
 for K in "${K_VALUES[@]}"; do
     echo ""
     echo "=========================================="
@@ -67,16 +74,26 @@ for K in "${K_VALUES[@]}"; do
     echo "=========================================="
     echo ""
     
-    # Simply call run.sh with K as second argument
-    bash "${PROJECT_ROOT}/run.sh" "$CONFIG_FILE" "$K" || {
-        echo "Error: Failed for K=$K"
-        echo "Continuing with next K value..."
-        continue
-    }
+    LATEST_BEFORE=$(ls -td "${EXPERIMENTS_DIR}/${CONFIG_NAME}_"*/ 2>/dev/null | head -1)
     
-    echo ""
-    echo "✓ Completed K=$K experiment"
-    echo ""
+    # Simply call run.sh with K as second argument
+    if bash "${PROJECT_ROOT}/run.sh" "$CONFIG_FILE" "$K"; then
+        echo ""
+        echo "✓ Completed K=$K experiment"
+        echo ""
+        LATEST_AFTER=$(ls -td "${EXPERIMENTS_DIR}/${CONFIG_NAME}_"*/ 2>/dev/null | head -1)
+        if [ -n "$LATEST_AFTER" ] && [ "$LATEST_AFTER" != "$LATEST_BEFORE" ]; then
+            SWEEP_EXPERIMENTS+=("K=$K -> $LATEST_AFTER")
+        else
+            SWEEP_EXPERIMENTS+=("K=$K -> (experiment folder not detected)")
+        fi
+    else
+        echo ""
+        echo "⚠ Error: Failed for K=$K"
+        echo "Continuing with next K value..."
+        echo ""
+        SWEEP_EXPERIMENTS+=("K=$K -> (failed)")
+    fi
 done
 
 echo ""
@@ -84,30 +101,19 @@ echo "=========================================="
 echo "K Sweep Complete!"
 echo "=========================================="
 echo ""
-echo "Results for each K are in:"
-# All K values share the same results folder (BASE_CONFIG_NAME)
-RESULT_DIR="${PROJECT_ROOT}/results/${BASE_CONFIG_NAME}/"
-if [ -d "$RESULT_DIR" ]; then
-    LATEST=$(ls -td "${RESULT_DIR}"/*/ 2>/dev/null | head -1)
-    if [ -n "$LATEST" ]; then
-        echo "  All K values: $LATEST"
-        echo "  (All K values share the same results folder)"
-    else
-        echo "  Results folder: $RESULT_DIR (no timestamp folder found)"
-    fi
+echo "Experiment folders created:"
+if [ ${#SWEEP_EXPERIMENTS[@]} -gt 0 ]; then
+    for entry in "${SWEEP_EXPERIMENTS[@]}"; do
+        echo "  $entry"
+    done
 else
-    echo "  Results folder: $RESULT_DIR (not found)"
+    echo "  (none detected)"
 fi
 echo ""
-echo "DAD models for each K are in:"
-for K in "${K_VALUES[@]}"; do
-    # Use BASE_CONFIG_NAME for model folder (all K values share same folder)
-    MODEL_DIR="${PROJECT_ROOT}/models/${BASE_CONFIG_NAME}/"
-    MODEL_FILE="${MODEL_DIR}dad_policy_N${N}_K${K}.pth"
-    if [ -f "$MODEL_FILE" ]; then
-        echo "  K=$K: $MODEL_FILE"
-    else
-        echo "  K=$K: (not found)"
-    fi
-done
+echo "Each folder contains:"
+echo "  - config.yaml (resolved config with K override)"
+echo "  - dad_data/ (trajectories)"
+echo "  - dad_models/ (policy checkpoints + metrics)"
+echo "  - logs/workflow.log"
+echo "  - eval/ (baseline + DAD evaluation outputs)"
 echo ""

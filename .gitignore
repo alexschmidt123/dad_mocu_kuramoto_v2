@@ -117,6 +117,7 @@ $RECYCLE.BIN/
 **/data/*.json
 
 # Experiment outputs folder (contains all runs)
+experiments/
 ../experiments/
 
 # Data, models, and results folders (generated files, not in git)

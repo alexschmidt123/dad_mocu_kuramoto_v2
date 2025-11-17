@@ -245,9 +245,24 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
     reward_list = []  # Track rewards for better baseline initialization
     all_rewards = []  # Track all rewards for batch baseline computation
     
+    # Initialize epoch-level metrics tracking
+    if not hasattr(train_reinforce, '_epoch_metrics'):
+        train_reinforce._epoch_metrics = {
+            'advantages': [],
+            'rewards': [],
+            'entropies': [],
+            'reward_stds': []
+        }
+    
     h = 1.0 / 160.0
     T = 5.0
     M = int(T / h)
+    
+    num_actions_total = N * (N - 1) // 2
+    action_visit_counts = np.zeros(num_actions_total, dtype=np.int64)
+    terminal_mocu_values = []
+    mpnn_errors = []
+    observation_counts = {}
     
     # CRITICAL: Ensure clean CUDA state before training loop
     if torch.cuda.is_available():
@@ -355,6 +370,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
             log_prob = dist.log_prob(action_idx)
             
             action_i, action_j = model.idx_to_pair(action_idx.item())
+            action_visit_counts[action_idx.item()] += 1
             
             # === EXPERIMENT SIMULATION ===
             # Use CPU-based sync detection (no torchdiffeq during training to avoid CUDA issues)
@@ -365,6 +381,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
             a_ij = a_true[action_i, action_j]
             observation = determineSyncTwo(w_i, w_j, h, 2, M, a_ij)
             a_lower, a_upper = update_bounds(a_lower, a_upper, action_i, action_j, observation, w)
+            observation_counts[observation] = observation_counts.get(observation, 0) + 1
             
             observed_pairs.append((action_i, action_j))
             observations_list.append(observation)
@@ -412,6 +429,15 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         if isinstance(terminal_MOCU, torch.Tensor):
             terminal_MOCU = terminal_MOCU.detach().cpu().item()
         terminal_MOCU = float(terminal_MOCU)
+        terminal_mocu_values.append(terminal_MOCU)
+        
+        if use_predicted_mocu and mocu_model is not None and 'terminal_MOCU' in traj:
+            with torch.no_grad():
+                final_state_data_monitor = create_state_data(w, a_lower, a_upper, device=device)
+                mpnn_terminal = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+                if isinstance(mpnn_terminal, torch.Tensor):
+                    mpnn_terminal = mpnn_terminal.detach().cpu().item()
+            mpnn_errors.append(abs(float(mpnn_terminal) - float(traj['terminal_MOCU'])))
         
         # === PER-STEP REWARD METHOD ===
         # Compute rewards at each step to encourage early-step efficiency
@@ -488,11 +514,20 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                 # This ensures advantages have consistent scale regardless of reward distribution
                 advantage = float((reward - reward_mean) / reward_std)
                 
+                # Ensure advantage has reasonable magnitude (not too small)
+                # Scale advantage to maintain learning signal if it's too small
+                if abs(advantage) < 0.1:
+                    # Scale up small advantages to maintain gradient signal
+                    advantage = advantage * (0.1 / abs(advantage)) if abs(advantage) > 1e-6 else (0.1 if advantage >= 0 else -0.1)
+                
                 # Clip to prevent extreme values that could cause gradient explosion
                 advantage = np.clip(advantage, -5.0, 5.0)
             elif reward_std > 1e-6:  # Very low but non-zero variance
                 # Use aggressive scaling to maintain learning signal
                 advantage = float((reward - reward_mean) / max(reward_std, 1e-4)) * 10.0
+                # Ensure minimum magnitude
+                if abs(advantage) < 0.1:
+                    advantage = 0.1 if advantage >= 0 else -0.1
                 advantage = np.clip(advantage, -5.0, 5.0)
             else:
                 # Extremely low variance (all rewards nearly identical): use constant advantage
@@ -816,6 +851,21 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
             # Calculate average entropy for diagnostics (prevent policy collapse)
             avg_entropy = np.mean([ent.item() for ent in entropy_loss]) if entropy_loss else 0.0
             
+            # Track metrics for epoch-level monitoring
+            if not hasattr(train_reinforce, '_epoch_metrics'):
+                train_reinforce._epoch_metrics = {
+                    'advantages': [],
+                    'rewards': [],
+                    'entropies': [],
+                    'reward_stds': []
+                }
+            train_reinforce._epoch_metrics['advantages'].append(adv_magnitude)
+            train_reinforce._epoch_metrics['rewards'].append(reward)
+            if len(entropy_loss) > 0:
+                avg_entropy_val = sum(entropy_loss).item() / len(entropy_loss)
+                train_reinforce._epoch_metrics['entropies'].append(avg_entropy_val)
+            train_reinforce._epoch_metrics['reward_stds'].append(reward_std)
+            
             traj_pbar.set_postfix({
                 'loss': f'{current_loss:.4f}', 
                 'reward': f'{reward:.4f}',
@@ -864,6 +914,42 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
     
     avg_loss = total_loss / len(trajectories)
     avg_reward = total_reward / len(trajectories)
+    
+    # Monitoring metrics for trajectory diversity, MOCU variance, and MPNN predictor health
+    action_visit_total = action_visit_counts.sum()
+    if action_visit_total > 0:
+        action_distribution = action_visit_counts / action_visit_total
+        action_entropy = float(
+            -np.sum(action_distribution * np.log(action_distribution + 1e-12)) /
+            np.log(len(action_distribution))
+        )
+    else:
+        action_entropy = 0.0
+    action_coverage = float(np.count_nonzero(action_visit_counts) / len(action_visit_counts)) if len(action_visit_counts) > 0 else 0.0
+    mocu_variance = float(np.var(terminal_mocu_values)) if len(terminal_mocu_values) > 1 else 0.0
+    total_observations = sum(observation_counts.values())
+    if total_observations > 0:
+        sync_rate = observation_counts.get(1, 0) / total_observations
+    else:
+        sync_rate = 0.0
+    mpnn_mae = float(np.mean(mpnn_errors)) if len(mpnn_errors) > 0 else None
+    mpnn_max_error = float(np.max(mpnn_errors)) if len(mpnn_errors) > 0 else None
+    
+    train_reinforce._monitor_metrics = {
+        'action_entropy': action_entropy,
+        'action_coverage': action_coverage,
+        'terminal_mocu_variance': mocu_variance,
+        'sync_rate': sync_rate,
+        'mpnn_mae': mpnn_mae,
+        'mpnn_max_error': mpnn_max_error
+    }
+    
+    # Store epoch-level metrics for plotting (accessible via function attribute)
+    # These will be extracted in main() for plotting
+    if hasattr(train_reinforce, '_epoch_metrics'):
+        train_reinforce._metrics = train_reinforce._epoch_metrics.copy()
+        # Clear for next epoch
+        train_reinforce._epoch_metrics = {'advantages': [], 'rewards': [], 'entropies': [], 'reward_stds': []}
     
     return avg_loss, avg_reward
 
@@ -975,7 +1061,14 @@ def main():
         critic = critic.to(device)
         print(f"Critic parameters: {sum(p.numel() for p in critic.parameters()):,}")
         
-        critic_lr = args.critic_lr if args.critic_lr is not None else args.lr
+        # Use lower learning rate for critic (2-5x lower than policy) for stability
+        # Critic learning from scratch needs slower updates to avoid interference with policy
+        if args.critic_lr is not None:
+            critic_lr = args.critic_lr
+        else:
+            # Default: 0.25x policy LR for stability (reduced from 0.5x to prevent critic learning too fast)
+            # Lower critic LR prevents vanishing advantages when loss is increasing
+            critic_lr = args.lr * 0.25
         critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
         print(f"Using critic network for variance reduction (iDAD-inspired)")
         print(f"  Critic LR: {critic_lr}")
@@ -1005,6 +1098,18 @@ def main():
     # Early stopping: stop if no improvement for N epochs
     early_stop_patience = 20  # Stop if no improvement for 20 epochs
     early_stop_counter = 0
+    
+    # Track training metrics for monitoring (advantage, entropy, reward trends)
+    epoch_advantages = []  # Average advantage magnitude per epoch
+    epoch_entropies = []   # Average entropy per epoch
+    epoch_rewards = []     # Average reward per epoch
+    epoch_reward_stds = [] # Reward standard deviation per epoch
+    epoch_action_entropies = []
+    epoch_action_coverages = []
+    epoch_terminal_mocu_vars = []
+    epoch_sync_rates = []
+    epoch_mpnn_maes = []
+    epoch_mpnn_max_errors = []
     
     # Prepare output directory and best-checkpoint tracking
     output_dir = Path(args.output_dir)
@@ -1221,12 +1326,15 @@ def main():
                             f"Please check model path and train MPNN first."
                         ) from e
             
-            # Entropy scheduling: start high, decay slowly to maintain exploration
-            # Start at 1.0, decay to 0.7 over epochs (prevents early collapse, maximum exploration)
-            initial_entropy = 1.0
-            final_entropy = 0.7  # Increased from 0.5 to 0.7 to maintain more exploration
-            decay_epochs = args.epochs * 0.8  # Decay over 80% of training (slower decay)
+            # Entropy scheduling: start high, decay very slowly to maintain exploration
+            # Start at 1.5, decay to 0.7 over 95% of training (even slower decay to prevent early collapse)
+            # This keeps exploration high longer, preventing policy from becoming deterministic too early
+            # Increased initial entropy and slower decay to fix increasing loss problem
+            initial_entropy = 1.5  # Higher initial entropy for more exploration
+            final_entropy = 0.7  # Final entropy (higher minimum to prevent collapse)
+            decay_epochs = args.epochs * 0.95  # Decay over 95% of training (even slower decay)
             if epoch < decay_epochs:
+                # Linear decay: slower than before
                 current_entropy = initial_entropy - (initial_entropy - final_entropy) * (epoch / decay_epochs)
             else:
                 current_entropy = final_entropy
@@ -1239,7 +1347,7 @@ def main():
                 mocu_std=mocu_std,
                 use_predicted_mocu=use_predicted_mocu,
                 epoch_num=epoch,
-                entropy_coef=current_entropy,  # Scheduled entropy: starts at 0.5, decays to 0.3
+                entropy_coef=current_entropy,  # Scheduled entropy: starts at 1.0, decays to 0.6 over 90% of epochs
                 critic=critic,
                 critic_optimizer=critic_optimizer,
                 use_per_step_reward=True,  # Enable per-step rewards to fix "wasting first steps"
@@ -1248,10 +1356,48 @@ def main():
             train_losses.append(loss)
             current_loss = train_losses[-1]
             
-            # Warn if loss is increasing (divergence) and automatically reduce LR
+            # Extract metrics from train_reinforce function (if available)
+            if hasattr(train_reinforce, '_metrics') and train_reinforce._metrics:
+                metrics = train_reinforce._metrics
+                if metrics.get('advantages') and len(metrics['advantages']) > 0:
+                    epoch_advantages.append(np.mean(metrics['advantages']))
+                if metrics.get('entropies') and len(metrics['entropies']) > 0:
+                    epoch_entropies.append(np.mean(metrics['entropies']))
+                if metrics.get('rewards') and len(metrics['rewards']) > 0:
+                    epoch_rewards.append(np.mean(metrics['rewards']))
+                    if metrics.get('reward_stds') and len(metrics['reward_stds']) > 0:
+                        epoch_reward_stds.append(np.mean(metrics['reward_stds']))
+                    else:
+                        epoch_reward_stds.append(0.0)
+            else:
+                # Fallback: use reward as proxy (less detailed)
+                epoch_rewards.append(reward)
+                epoch_reward_stds.append(0.0)
+            
+            monitor_metrics = getattr(train_reinforce, '_monitor_metrics', None)
+            if monitor_metrics:
+                epoch_action_entropies.append(monitor_metrics.get('action_entropy', 0.0))
+                epoch_action_coverages.append(monitor_metrics.get('action_coverage', 0.0))
+                epoch_terminal_mocu_vars.append(monitor_metrics.get('terminal_mocu_variance', 0.0))
+                epoch_sync_rates.append(monitor_metrics.get('sync_rate', 0.0))
+                epoch_mpnn_maes.append(monitor_metrics.get('mpnn_mae'))
+                epoch_mpnn_max_errors.append(monitor_metrics.get('mpnn_max_error'))
+            else:
+                epoch_action_entropies.append(0.0)
+                epoch_action_coverages.append(0.0)
+                epoch_terminal_mocu_vars.append(0.0)
+                epoch_sync_rates.append(0.0)
+                epoch_mpnn_maes.append(None)
+                epoch_mpnn_max_errors.append(None)
+            
+            # Early stopping on divergence: stop if loss is consistently increasing
+            # This prevents wasting time on unstable training
+            divergence_detected = False
             if len(train_losses) > 5:
                 recent_trend = train_losses[-5:]
+                # Check if loss is consistently increasing (diverging)
                 if all(recent_trend[i] > recent_trend[i-1] for i in range(1, len(recent_trend))):
+                    divergence_detected = True
                     if not hasattr(main, '_divergence_warned'):
                         print(f"\n⚠️  [EPOCH {epoch + 1}] WARNING: Loss is INCREASING (diverging)!")
                         print(f"   Recent trend: {[f'{x:.6f}' for x in recent_trend]}")
@@ -1271,8 +1417,9 @@ def main():
                                 print(f"   Critic LR: {old_lr:.2e} → {param_group['lr']:.2e}")
                         
                         main._divergence_warned = True
+                        main._divergence_epoch = epoch
                     elif not hasattr(main, '_divergence_lr_reduced'):
-                        # If divergence continues, reduce LR again
+                        # If divergence continues after LR reduction, reduce LR again
                         print(f"\n⚠️  [EPOCH {epoch + 1}] Divergence continues - reducing LR again...")
                         for param_group in optimizer.param_groups:
                             old_lr = param_group['lr']
@@ -1286,6 +1433,16 @@ def main():
                                 print(f"   Critic LR: {old_lr:.2e} → {param_group['lr']:.2e}")
                         
                         main._divergence_lr_reduced = True
+                        main._divergence_epoch = epoch
+                    else:
+                        # Divergence continues after 2 LR reductions - stop training
+                        divergence_epochs = epoch - main._divergence_epoch
+                        if divergence_epochs >= 5:  # Stop if divergence continues for 5+ epochs
+                            print(f"\n🛑 [EPOCH {epoch + 1}] STOPPING: Training is diverging!")
+                            print(f"   Loss has been increasing for {divergence_epochs} epochs")
+                            print(f"   Best loss was {best_loss:.6f} at epoch {best_epoch + 1}")
+                            print(f"   Using best checkpoint instead of continuing unstable training.")
+                            break
             
             # Warn if loss is approaching zero (policy collapse)
             if abs(current_loss) < 0.001:
@@ -1305,7 +1462,9 @@ def main():
                 print(f"[Checkpoint] Saved best model (epoch {epoch + 1}, loss {current_loss:.6f}) -> {best_model_path}")
             
             epoch_pbar.set_postfix({'loss': f'{loss:.4f}', 'reward': f'{reward:.4f}', 
-                                   'time': f'{time.time()-start_time:.1f}s'})
+                                   'time': f'{time.time()-start_time:.1f}s',
+                                   'actH': f'{epoch_action_entropies[-1]:.2f}',
+                                   'mocu_var': f'{epoch_terminal_mocu_vars[-1]:.2e}'})
         
         # Update learning rate scheduler
         if args.method == 'reinforce':
@@ -1365,9 +1524,8 @@ def main():
     
     # Plot training curves (if matplotlib is available)
     if HAS_MATPLOTLIB:
-        fig, axes = plt.subplots(1, 2 if args.method == 'imitation' else 1, figsize=(12, 4))
-        
         if args.method == 'imitation':
+            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
             axes[0].plot(train_losses)
             axes[0].set_xlabel('Epoch')
             axes[0].set_ylabel('Loss')
@@ -1380,17 +1538,105 @@ def main():
             axes[1].set_title('Training Accuracy')
             axes[1].grid(True)
         else:
-            axes.plot(train_losses)
-            axes.set_xlabel('Epoch')
-            axes.set_ylabel('Loss')
-            axes.set_title('Training Loss (REINFORCE)')
-            axes.grid(True)
+            # REINFORCE: Plot comprehensive metrics
+            if epoch_advantages or epoch_entropies or epoch_rewards:
+                # Multi-panel plot for comprehensive monitoring
+                fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+                
+                # Loss curve
+                axes[0, 0].plot(train_losses, 'b-', linewidth=2)
+                axes[0, 0].set_xlabel('Epoch')
+                axes[0, 0].set_ylabel('Loss')
+                axes[0, 0].set_title('Training Loss (lower is better)')
+                axes[0, 0].grid(True)
+                if best_epoch >= 0:
+                    axes[0, 0].axvline(x=best_epoch, color='r', linestyle='--', alpha=0.5, label=f'Best (epoch {best_epoch+1})')
+                    axes[0, 0].legend()
+                
+                # Reward trend
+                if epoch_rewards:
+                    axes[0, 1].plot(epoch_rewards, 'g-', linewidth=2, label='Mean Reward')
+                    if epoch_reward_stds and len(epoch_reward_stds) == len(epoch_rewards):
+                        # Show reward variance as shaded area
+                        rewards_array = np.array(epoch_rewards)
+                        stds_array = np.array(epoch_reward_stds)
+                        axes[0, 1].fill_between(range(len(epoch_rewards)), 
+                                                rewards_array - stds_array, 
+                                                rewards_array + stds_array, 
+                                                alpha=0.2, color='g', label='±1 std')
+                    axes[0, 1].set_xlabel('Epoch')
+                    axes[0, 1].set_ylabel('Reward')
+                    axes[0, 1].set_title('Average Reward per Epoch')
+                    axes[0, 1].grid(True)
+                    axes[0, 1].legend()
+                else:
+                    axes[0, 1].text(0.5, 0.5, 'No reward data', ha='center', va='center', transform=axes[0, 1].transAxes)
+                    axes[0, 1].set_title('Average Reward per Epoch')
+                
+                # Advantage magnitude trend
+                if epoch_advantages:
+                    axes[1, 0].plot(epoch_advantages, 'm-', linewidth=2)
+                    axes[1, 0].axhline(y=0.1, color='r', linestyle='--', alpha=0.5, label='Min threshold (0.1)')
+                    axes[1, 0].set_xlabel('Epoch')
+                    axes[1, 0].set_ylabel('|Advantage|')
+                    axes[1, 0].set_title('Average Advantage Magnitude (should be > 0.1)')
+                    axes[1, 0].grid(True)
+                    axes[1, 0].legend()
+                else:
+                    axes[1, 0].text(0.5, 0.5, 'No advantage data', ha='center', va='center', transform=axes[1, 0].transAxes)
+                    axes[1, 0].set_title('Average Advantage Magnitude')
+                
+                # Entropy trend
+                if epoch_entropies:
+                    axes[1, 1].plot(epoch_entropies, 'c-', linewidth=2)
+                    axes[1, 1].axhline(y=0.01, color='r', linestyle='--', alpha=0.5, label='Min threshold (0.01)')
+                    axes[1, 1].set_xlabel('Epoch')
+                    axes[1, 1].set_ylabel('Entropy')
+                    axes[1, 1].set_title('Average Entropy (should be > 0.01)')
+                    axes[1, 1].grid(True)
+                    axes[1, 1].legend()
+                else:
+                    axes[1, 1].text(0.5, 0.5, 'No entropy data', ha='center', va='center', transform=axes[1, 1].transAxes)
+                    axes[1, 1].set_title('Average Entropy')
+            else:
+                # Fallback: simple loss plot if no metrics available
+                fig, axes = plt.subplots(1, 1, figsize=(12, 4))
+                axes.plot(train_losses)
+                axes.set_xlabel('Epoch')
+                axes.set_ylabel('Loss')
+                axes.set_title('Training Loss (REINFORCE)')
+                axes.grid(True)
+                if best_epoch >= 0:
+                    axes.axvline(x=best_epoch, color='r', linestyle='--', alpha=0.5, label=f'Best (epoch {best_epoch+1})')
+                    axes.legend()
         
         plt.tight_layout()
         plt.savefig(output_dir / f'{args.name}_training_curve.png', dpi=300)
         print(f"✓ Training curve saved to: {output_dir / f'{args.name}_training_curve.png'}")
     else:
         print("[INFO] Skipping training curve plot (matplotlib not available)")
+    
+    # Save training metrics to JSON for analysis
+    import json
+    metrics_dict = {
+        'train_losses': train_losses,
+        'epoch_rewards': epoch_rewards if 'epoch_rewards' in locals() else [],
+        'epoch_reward_stds': epoch_reward_stds if 'epoch_reward_stds' in locals() else [],
+        'epoch_advantages': epoch_advantages if 'epoch_advantages' in locals() else [],
+        'epoch_entropies': epoch_entropies if 'epoch_entropies' in locals() else [],
+        'epoch_action_entropies': epoch_action_entropies if 'epoch_action_entropies' in locals() else [],
+        'epoch_action_coverages': epoch_action_coverages if 'epoch_action_coverages' in locals() else [],
+        'epoch_terminal_mocu_vars': epoch_terminal_mocu_vars if 'epoch_terminal_mocu_vars' in locals() else [],
+        'epoch_sync_rates': epoch_sync_rates if 'epoch_sync_rates' in locals() else [],
+        'epoch_mpnn_maes': epoch_mpnn_maes if 'epoch_mpnn_maes' in locals() else [],
+        'epoch_mpnn_max_errors': epoch_mpnn_max_errors if 'epoch_mpnn_max_errors' in locals() else [],
+        'best_epoch': best_epoch,
+        'best_loss': best_loss if 'best_loss' in locals() else None
+    }
+    metrics_path = output_dir / f'{args.name}_training_metrics.json'
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics_dict, f, indent=2)
+    print(f"✓ Training metrics saved to: {metrics_path}")
     
     print("\n" + "=" * 80)
     print("Training complete!")

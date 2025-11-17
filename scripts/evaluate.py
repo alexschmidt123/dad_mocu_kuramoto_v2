@@ -215,6 +215,11 @@ if __name__ == '__main__':
         elapsed = time.time() - timeMOCU
         sim_pbar.write(f'  Initial MOCU: {MOCUInitial:.6f} ({elapsed:.1f}s)')
         
+        # Save initial MOCU for this simulation (for DAD/iDAD to use same value)
+        # This ensures fair comparison - all methods use exact same initial MOCU
+        initial_mocu_file = os.path.join(result_folder, f'initial_MOCU_{numberOfVaildSimulations}.txt')
+        np.savetxt(initial_mocu_file, [MOCUInitial], fmt='%.64e')
+        
         # ========== Evaluate each method ==========
         method_pbar = tqdm(method_names, desc="  Methods", leave=False, unit="method", ncols=80, mininterval=1.0)
         
