@@ -404,13 +404,13 @@ class OEDMethod(ABC):
                         self._mpnn_mocu_warned = True
                     MOCUCurve[iteration + 1] = MOCUCurve[iteration]
             elif is_dad_method:
-                # For DAD method: Try PyCUDA first (for consistency with baselines), fallback to torchdiffeq
+                # For DAD method: PyCUDA only (required, no fallback to torchdiffeq)
                 # DAD uses policy network for selection, real MOCU for tracking (same as baselines)
-                # This ensures fair comparison: all methods use same MOCU computation backend
+                # This ensures fair comparison: all methods use same MOCU computation backend (PyCUDA)
                 it_temp_val = np.zeros(self.it_idx)
                 mocu_computed = False
                 
-                # Try PyCUDA first (matches baselines)
+                # PyCUDA only (required, no fallback)
                 try:
                     from ..core.mocu_pycuda import MOCU_pycuda
                     for l in range(self.it_idx):
@@ -423,32 +423,15 @@ class OEDMethod(ABC):
                     mocu_computed = True
                     # Log successful PyCUDA usage (only once per run)
                     if not hasattr(self, '_dad_pycuda_success_logged'):
-                        print(f"[DAD] Using PyCUDA for MOCU tracking (matching baselines)")
+                        print(f"[DAD] Using PyCUDA for MOCU tracking (required, matches baselines)")
                         self._dad_pycuda_success_logged = True
                 except Exception as e:
-                    # PyCUDA failed, try torchdiffeq as fallback
-                    if not hasattr(self, '_dad_pycuda_fallback_warned'):
-                        print(f"[DAD] PyCUDA unavailable, using torchdiffeq fallback: {e}")
-                        self._dad_pycuda_fallback_warned = True
-                    
-                    try:
-                        from ..core.mocu_torchdiffeq import MOCU_torchdiffeq
-                        device = 'cuda' if (torch is not None and torch.cuda.is_available()) else 'cpu'
-                        for l in range(self.it_idx):
-                            it_temp_val[l] = MOCU_torchdiffeq(
-                                self.K_max, w_init, self.N, self.deltaT,
-                                self.MReal, self.TReal,
-                                a_lower_current, a_upper_current, 0, device=device
-                            )
-                        MOCUCurve[iteration + 1] = np.mean(it_temp_val)
-                        mocu_computed = True
-                    except Exception as e2:
-                        # Both failed, keep previous value
-                        if not hasattr(self, '_dad_mocu_failed_warned'):
-                            print(f"[DAD] Warning: Both PyCUDA and torchdiffeq failed, using previous MOCU: {e2}")
-                            self._dad_mocu_failed_warned = True
-                        MOCUCurve[iteration + 1] = MOCUCurve[iteration]
-                        mocu_computed = False
+                    # PyCUDA is required - raise error instead of falling back
+                    raise RuntimeError(
+                        f"PyCUDA is REQUIRED for DAD/iDAD MOCU computation. "
+                        f"PyCUDA failed at iteration {iteration + 1}: {e}\n"
+                        f"Please ensure PyCUDA is properly installed and configured."
+                    ) from e
                 
                 # Apply monotonicity constraint (matching original paper)
                 if mocu_computed and MOCUCurve[iteration + 1] > MOCUCurve[iteration]:

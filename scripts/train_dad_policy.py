@@ -470,7 +470,8 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         
         # Scale factor to normalize rewards to reasonable range (typically 0-1)
         # This prevents rewards from being too large/small and improves learning stability
-        reward_scale = 10.0  # Scale improvement to reasonable range
+        # Increased from 10.0 to 50.0 to amplify reward signal and improve learning
+        reward_scale = 50.0  # Scale improvement to reasonable range (increased for better signal)
         
         if initial_MOCU is not None:
             # Improvement-based terminal reward: reward = (initial_MOCU - terminal_MOCU) * scale
@@ -1011,7 +1012,7 @@ def main():
                        help='Training method: "dad_mocu" (no critic, simple baseline), "idad_mocu" (with critic from scratch), "reinforce" (legacy), or "imitation" (behavior cloning)')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
-    parser.add_argument('--lr', type=float, default=0.00001, help='Learning rate (default: 1e-5, reduced for stability)')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate (default: 1e-4, increased from 1e-5 for better learning)')
     parser.add_argument('--hidden-dim', type=int, default=256, help='Hidden dimension (default: 256, matching original DAD)')
     parser.add_argument('--encoding-dim', type=int, default=16, help='Encoding dimension (default: 16, matching original DAD)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
@@ -1415,11 +1416,11 @@ def main():
                         ) from e
             
             # Entropy scheduling: start high, decay very slowly to maintain exploration
-            # Start at 1.5, decay to 0.7 over 95% of training (even slower decay to prevent early collapse)
+            # Start at 2.0, decay to 1.0 over 95% of training (even slower decay to prevent early collapse)
             # This keeps exploration high longer, preventing policy from becoming deterministic too early
-            # Increased initial entropy and slower decay to fix increasing loss problem
-            initial_entropy = 1.5  # Higher initial entropy for more exploration
-            final_entropy = 0.7  # Final entropy (higher minimum to prevent collapse)
+            # Increased initial entropy and slower decay to fix increasing loss problem and improve diversity
+            initial_entropy = 2.0  # Higher initial entropy for more exploration (increased from 1.5)
+            final_entropy = 1.0  # Final entropy (higher minimum to prevent collapse, increased from 0.7)
             decay_epochs = args.epochs * 0.95  # Decay over 95% of training (even slower decay)
             if epoch < decay_epochs:
                 # Linear decay: slower than before
@@ -1439,7 +1440,7 @@ def main():
                 critic=critic,
                 critic_optimizer=critic_optimizer,
                 use_per_step_reward=True,  # Enable per-step rewards to fix "wasting first steps"
-                per_step_weight=0.3  # 30% per-step, 70% terminal
+                per_step_weight=0.4  # 40% per-step, 60% terminal (increased from 0.3 to encourage more exploration)
             )
             train_losses.append(loss)
             current_loss = train_losses[-1]

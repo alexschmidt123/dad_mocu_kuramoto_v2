@@ -93,21 +93,16 @@ if __name__ == '__main__':
     aInitialLower = np.loadtxt(aInitialLower_file)
     
     # ========== Choose MOCU backend for initial computation ==========
-    # Use same MOCU computation method as baseline evaluation (prefer PyCUDA, fallback to torchdiffeq)
-    # This ensures fair comparison - each simulation computes its own initial MOCU
-    device = None  # Only set if using torchdiffeq
+    # Use PyCUDA only (required, no fallback to torchdiffeq)
+    # This ensures fair comparison - each simulation computes its own initial MOCU using PyCUDA
     try:
         from src.core.mocu_pycuda import MOCU_pycuda as MOCU_initial
-        use_pycuda = True
-        mocu_backend = "PyCUDA (matches baseline evaluation)"
+        mocu_backend = "PyCUDA (required, matches baseline evaluation)"
     except (ImportError, RuntimeError) as e:
-        print(f"⚠️  Warning: PyCUDA not available: {e}")
-        print(f"   Falling back to torchdiffeq...")
-        import torch
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        from src.core.mocu_torchdiffeq import MOCU_torchdiffeq as MOCU_initial
-        use_pycuda = False
-        mocu_backend = f"torchdiffeq (device: {device})"
+        raise RuntimeError(
+            f"PyCUDA is REQUIRED for DAD/iDAD evaluation. PyCUDA not available: {e}\n"
+            f"Please ensure PyCUDA is properly installed and configured."
+        ) from e
     
     print(f"Using MOCU backend: {mocu_backend}")
     print(f"Note: Initial MOCU will be computed per simulation (matches baseline evaluation)")
@@ -209,12 +204,9 @@ if __name__ == '__main__':
             
             with tqdm(total=it_idx, desc="  Initial MOCU", leave=False, unit="iter", ncols=80, mininterval=0.5) as pbar:
                 for l in range(it_idx):
-                    if use_pycuda:
-                        it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
-                                                      aInitialLower.copy(), aInitialUpper.copy(), 0)
-                    else:
-                        it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
-                                                      aInitialLower.copy(), aInitialUpper.copy(), 0, device=device)
+                    # PyCUDA only (no torchdiffeq fallback)
+                    it_temp_val[l] = MOCU_initial(K_max, w, N, deltaT, MReal, TReal,
+                                                  aInitialLower.copy(), aInitialUpper.copy(), 0)
                     pbar.update(1)
             
             MOCUInitial = np.mean(it_temp_val)
