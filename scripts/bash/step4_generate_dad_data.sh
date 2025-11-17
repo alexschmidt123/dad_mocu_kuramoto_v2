@@ -34,10 +34,13 @@ if [ -z "$MPNN_MODEL_FOLDER" ] || [ ! -d "$MPNN_MODEL_FOLDER" ]; then
     exit 1
 fi
 
-# Determine output directories (experiment-local or legacy)
+# Determine output directories
+# Strategy: Always generate fresh DAD data in experiment folder (never reuse)
+# data/<config-name>/ is ONLY for MPNN training data, not DAD data
 if [ -n "$EXP_DAD_DATA_DIR" ]; then
     DATA_FOLDER="$EXP_DAD_DATA_DIR"
 else
+    # Fallback: use data folder if experiment dir not set (shouldn't happen in normal workflow)
     DATA_FOLDER="${PROJECT_ROOT}/data/${BASE_CONFIG_NAME}"
 fi
 mkdir -p "$DATA_FOLDER"
@@ -106,41 +109,66 @@ except:
     fi
 }
 
-DATA_EXISTS=false
-DATA_MATCHES=false
+# Always generate fresh DAD data for each experiment (never reuse)
+# Remove existing data if present to ensure fresh generation
 if [ -f "$DAD_TRAJECTORY_FILE" ]; then
-    DATA_EXISTS=true
-    if [ "$(check_data_k_n "$DAD_TRAJECTORY_FILE")" = "true" ]; then
-        DATA_MATCHES=true
-    fi
-fi
-
-if [ "$DATA_EXISTS" = true ] && [ "$DATA_MATCHES" = false ]; then
-    echo "⚠ DAD data exists but doesn't match current config (N/K/episodes). Regenerating..."
+    echo "⚠ Removing existing DAD data to ensure fresh generation: $DAD_TRAJECTORY_FILE"
     rm -f "$DAD_TRAJECTORY_FILE"
-    DATA_EXISTS=false
-    DATA_MATCHES=false
 fi
 
-if [ "$DATA_EXISTS" = true ] && [ "$DATA_MATCHES" = true ]; then
-    echo "✓ DAD data already exists and matches config: $DAD_TRAJECTORY_FILE"
+echo "Generating DAD trajectory data (fresh for each experiment)..."
+echo "  Settings: num_episodes=$NUM_EPISODES, K=$K, use_precomputed_mocu=$USE_PRECOMPUTED_MOCU"
+echo "  Output folder: $DATA_FOLDER"
+
+# Set up log file for this step (if EXP_LOGS_DIR is available)
+if [ -n "$EXP_LOGS_DIR" ]; then
+    STEP_LOG="${EXP_LOGS_DIR}/step4_generate_dad_data.log"
+    echo "  Logging to: $STEP_LOG"
 else
-    echo "Generating DAD trajectory data..."
-    echo "  Settings: num_episodes=$NUM_EPISODES, K=$K, use_precomputed_mocu=$USE_PRECOMPUTED_MOCU"
-    cd "${PROJECT_ROOT}/scripts"
-    ABS_DAD_DATA_FOLDER=$(cd "$DATA_FOLDER" && pwd)
-    CMD="python3 generate_dad_data.py --N $N --num-episodes $NUM_EPISODES --K $K --output-dir $ABS_DAD_DATA_FOLDER"
-    if [ "$USE_PRECOMPUTED_MOCU" = "true" ] && [ -n "$MOCU_MODEL_NAME" ] && [ -f "${MPNN_MODEL_FOLDER}model.pth" ]; then
-        CMD="$CMD --use-mpnn-predictor --mpnn-model-name $MOCU_MODEL_NAME"
-        echo "  Using MPNN predictor ($MOCU_MODEL_NAME) to pre-compute MOCU values"
-    else
-        echo "  Not using MPNN predictor (terminal MOCU computed during training if needed)"
-    fi
-    eval $CMD
+    STEP_LOG="/dev/null"
 fi
 
-ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$DAD_TRAJECTORY_FILE")
-echo "$ABS_DAD_TRAJ_FILE" > /tmp/dad_traj_file_${CONFIG_NAME}.txt
+cd "${PROJECT_ROOT}/scripts"
+ABS_DAD_DATA_FOLDER=$(cd "$DATA_FOLDER" && pwd)
+CMD="python3 generate_dad_data.py --N $N --num-episodes $NUM_EPISODES --K $K --output-dir $ABS_DAD_DATA_FOLDER"
+if [ "$USE_PRECOMPUTED_MOCU" = "true" ] && [ -n "$MOCU_MODEL_NAME" ] && [ -f "${MPNN_MODEL_FOLDER}model.pth" ]; then
+    CMD="$CMD --use-mpnn-predictor --mpnn-model-name $MOCU_MODEL_NAME"
+    echo "  Using MPNN predictor ($MOCU_MODEL_NAME) to pre-compute MOCU values"
+else
+    echo "  Not using MPNN predictor (terminal MOCU computed during training if needed)"
+fi
 
-echo "✓ DAD training data ready: $ABS_DAD_TRAJ_FILE"
+# Run command and save to both workflow log and step-specific log
+# Note: We check for trajectory file existence even if command fails (diagnostics may fail but data is valid)
+if [ -n "$EXP_LOGS_DIR" ]; then
+    echo "=== Step 4: Generate DAD Data ===" | tee -a "$STEP_LOG"
+    echo "Command: $CMD" | tee -a "$STEP_LOG"
+    echo "Started: $(date)" | tee -a "$STEP_LOG"
+    set +e  # Temporarily disable exit on error
+    eval $CMD 2>&1 | tee -a "$STEP_LOG"
+    CMD_EXIT_CODE=${PIPESTATUS[0]}
+    set -e  # Re-enable exit on error
+    echo "Completed: $(date)" | tee -a "$STEP_LOG"
+else
+    set +e  # Temporarily disable exit on error
+    eval $CMD
+    CMD_EXIT_CODE=$?
+    set -e  # Re-enable exit on error
+fi
+
+# Check if trajectory file was created (even if diagnostics failed)
+ABS_DAD_TRAJ_FILE=$(cd "$(dirname "$DAD_TRAJECTORY_FILE")" && pwd)/$(basename "$DAD_TRAJECTORY_FILE")
+if [ -f "$ABS_DAD_TRAJ_FILE" ]; then
+    echo "$ABS_DAD_TRAJ_FILE" > /tmp/dad_traj_file_${CONFIG_NAME}.txt
+    echo "✓ DAD training data ready: $ABS_DAD_TRAJ_FILE"
+    # If command failed but file exists, it's likely just a diagnostics error - warn but continue
+    if [ "$CMD_EXIT_CODE" -ne 0 ]; then
+        echo "⚠ Command exited with code $CMD_EXIT_CODE, but trajectory file exists."
+        echo "  This may indicate a non-fatal error (e.g., diagnostics saving failed)."
+        echo "  Proceeding with training..."
+    fi
+else
+    echo "Error: DAD trajectory file was not created: $ABS_DAD_TRAJ_FILE"
+    exit 1
+fi
 

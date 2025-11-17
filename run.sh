@@ -116,8 +116,6 @@ with output_path.open('w') as f:
 print(f"Wrote experiment config to {output_path}")
 PYEOF
 
-ln -sf "$(basename "$RESOLVED_CONFIG_PATH")" "${EXPERIMENT_DIR}/config.yaml"
-
 CONFIG_FILE="$RESOLVED_CONFIG_PATH"
 
 if [ -n "$2" ] || [ -n "${K_OVERRIDE:-}" ]; then

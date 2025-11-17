@@ -180,6 +180,8 @@ for METHOD in "${METHODS_TO_TRAIN_ARRAY[@]}"; do
         continue
     fi
 
+    cd "${PROJECT_ROOT}/scripts"
+    
     TRAIN_CMD="python3 train_dad_policy.py \
         --data-path \"$ABS_DAD_TRAJ_FILE\" \
         --method \"$METHOD\" \
@@ -192,7 +194,18 @@ for METHOD in "${METHODS_TO_TRAIN_ARRAY[@]}"; do
         --output-dir \"$POLICY_OUTPUT_DIR\" \
         $USE_PREDICTED_MOCU"
 
-    eval $TRAIN_CMD
+    # Set up log file for this step (if EXP_LOGS_DIR is available)
+    if [ -n "$EXP_LOGS_DIR" ]; then
+        STEP_LOG="${EXP_LOGS_DIR}/step5_train_${METHOD}.log"
+        echo "  Logging to: $STEP_LOG"
+        echo "=== Step 5: Train $METHOD ===" | tee -a "$STEP_LOG"
+        echo "Command: $TRAIN_CMD" | tee -a "$STEP_LOG"
+        echo "Started: $(date)" | tee -a "$STEP_LOG"
+        eval $TRAIN_CMD 2>&1 | tee -a "$STEP_LOG"
+        echo "Completed: $(date)" | tee -a "$STEP_LOG"
+    else
+        eval $TRAIN_CMD
+    fi
 
     if [ "$METHOD" = "dad_mocu" ]; then
         if [ -f "$METHOD_BEST_MODEL_FILE" ]; then

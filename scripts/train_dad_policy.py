@@ -324,20 +324,29 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         
         K = len(traj['actions'])
         
-        # Compute initial MOCU for per-step rewards
+        # Compute initial MOCU (needed for improvement-based reward AND per-step rewards)
+        initial_MOCU_computed = None
         if use_per_step_reward:
             if use_predicted_mocu and mocu_model is not None:
                 with torch.no_grad():
                     initial_state_data = create_state_data(w, a_lower, a_upper, device=device)
-                    initial_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
-                    if isinstance(initial_MOCU, torch.Tensor):
-                        initial_MOCU = initial_MOCU.detach().cpu().item()
-                    initial_MOCU = float(initial_MOCU)
-                step_mocus.append(initial_MOCU)
+                    initial_MOCU_computed = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+                    if isinstance(initial_MOCU_computed, torch.Tensor):
+                        initial_MOCU_computed = initial_MOCU_computed.detach().cpu().item()
+                    initial_MOCU_computed = float(initial_MOCU_computed)
+                step_mocus.append(initial_MOCU_computed)
             else:
                 # Can't compute per-step without MPNN predictor
                 use_per_step_reward = False
                 step_mocus.append(None)
+        elif use_predicted_mocu and mocu_model is not None:
+            # Compute initial MOCU even if per-step rewards are disabled (needed for improvement-based reward)
+            with torch.no_grad():
+                initial_state_data = create_state_data(w, a_lower, a_upper, device=device)
+                initial_MOCU_computed = predict_mocu(mocu_model, mocu_mean, mocu_std, w, a_lower, a_upper, device=str(device))
+                if isinstance(initial_MOCU_computed, torch.Tensor):
+                    initial_MOCU_computed = initial_MOCU_computed.detach().cpu().item()
+                initial_MOCU_computed = float(initial_MOCU_computed)
         
         for step in range(K):
             # === POLICY NETWORK FORWARD PASS ===
@@ -439,32 +448,63 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                     mpnn_terminal = mpnn_terminal.detach().cpu().item()
             mpnn_errors.append(abs(float(mpnn_terminal) - float(traj['terminal_MOCU'])))
         
-        # === PER-STEP REWARD METHOD ===
-        # Compute rewards at each step to encourage early-step efficiency
-        if use_per_step_reward and len(step_mocus) == K + 1 and all(m is not None for m in step_mocus):
-            # Compute per-step rewards: reward_i = -(MOCU_i - MOCU_{i-1})
-            per_step_rewards = []
-            for i in range(1, len(step_mocus)):
-                mocu_reduction = step_mocus[i-1] - step_mocus[i]  # Positive reduction = good
-                step_reward = -mocu_reduction  # Negative because we want to minimize MOCU
-                per_step_rewards.append(step_reward)
+        # === IMPROVEMENT-BASED REWARD METHOD ===
+        # Use improvement-based rewards: reward = (initial_MOCU - terminal_MOCU) * scale
+        # This provides a learning signal that increases as performance improves
+        
+        # Get initial MOCU (for improvement-based reward)
+        # Priority: 1) Already computed above, 2) From step_mocus[0], 3) Compute now
+        initial_MOCU = None
+        if initial_MOCU_computed is not None:
+            initial_MOCU = initial_MOCU_computed  # Use already computed value
+        elif len(step_mocus) > 0 and step_mocus[0] is not None:
+            initial_MOCU = step_mocus[0]  # First element is initial MOCU
+        elif use_predicted_mocu and mocu_model is not None:
+            # Compute initial MOCU if not already computed
+            with torch.no_grad():
+                initial_state_data = create_state_data(w, traj['states'][0][0].copy(), traj['states'][0][1].copy(), device=device)
+                initial_MOCU = predict_mocu(mocu_model, mocu_mean, mocu_std, w, traj['states'][0][0].copy(), traj['states'][0][1].copy(), device=str(device))
+                if isinstance(initial_MOCU, torch.Tensor):
+                    initial_MOCU = initial_MOCU.detach().cpu().item()
+                initial_MOCU = float(initial_MOCU)
+        
+        # Scale factor to normalize rewards to reasonable range (typically 0-1)
+        # This prevents rewards from being too large/small and improves learning stability
+        reward_scale = 10.0  # Scale improvement to reasonable range
+        
+        if initial_MOCU is not None:
+            # Improvement-based terminal reward: reward = (initial_MOCU - terminal_MOCU) * scale
+            # Positive improvement = positive reward (we want to maximize this)
+            terminal_reward = (initial_MOCU - terminal_MOCU) * reward_scale
             
-            # Total per-step reward (sum of all step reductions)
-            total_per_step_reward = sum(per_step_rewards)
-            
-            # Terminal reward
-            terminal_reward = -terminal_MOCU
-            
-            # Weighted combination: per_step_weight * per_step + (1-weight) * terminal
-            # This gives explicit credit to early steps while still optimizing terminal MOCU
-            reward = (per_step_weight * total_per_step_reward + 
-                     (1.0 - per_step_weight) * terminal_reward)
-            
-            # Store per-step rewards for step-wise advantages
-            step_rewards_list = per_step_rewards
+            # Per-step rewards (if enabled): reward_i = (MOCU_{i-1} - MOCU_i) * scale
+            # Each step gets credit for MOCU reduction at that step
+            if use_per_step_reward and len(step_mocus) == K + 1 and all(m is not None for m in step_mocus):
+                per_step_rewards = []
+                for i in range(1, len(step_mocus)):
+                    mocu_reduction = step_mocus[i-1] - step_mocus[i]  # Positive reduction = good
+                    step_reward = mocu_reduction * reward_scale  # Positive reward for reduction
+                    per_step_rewards.append(step_reward)
+                
+                # Total per-step reward (sum of all step reductions)
+                total_per_step_reward = sum(per_step_rewards)
+                
+                # Weighted combination: per_step_weight * per_step + (1-weight) * terminal
+                # This gives explicit credit to early steps while still optimizing terminal MOCU
+                reward = (per_step_weight * total_per_step_reward + 
+                         (1.0 - per_step_weight) * terminal_reward)
+                
+                # Store per-step rewards for step-wise advantages
+                step_rewards_list = per_step_rewards
+            else:
+                # Terminal reward only (improvement-based)
+                reward = terminal_reward
+                step_rewards_list = None
         else:
-            # Fallback: terminal reward only (original method)
-            reward = float(-terminal_MOCU)
+            # Fallback: if initial MOCU unavailable, use absolute terminal MOCU (scaled)
+            # This should rarely happen if MPNN predictor is available
+            print(f"[WARNING] Initial MOCU not available, using absolute terminal MOCU reward")
+            reward = -terminal_MOCU * reward_scale  # Negative because lower MOCU = better
             step_rewards_list = None
         
         reward_list.append(reward)
@@ -473,7 +513,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
         # === CRITIC BASELINE (iDAD-inspired variance reduction) ===
         critic_baseline = None
         if critic is not None:
-            # Estimate MOCU using critic network
+            # Estimate terminal MOCU using critic network
             final_state_data = create_state_data(w, a_lower, a_upper, device=device)
             if len(observed_pairs) > 0:
                 history_list = [(observed_pairs[k][0], observed_pairs[k][1], observations_list[k]) 
@@ -484,8 +524,17 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
             
             critic.train()  # Ensure critic is in train mode
             with torch.no_grad():
-                mocu_estimate = critic(final_state_data, history_tensor)  # [1]
-                critic_baseline = -mocu_estimate.item()  # Negative because reward = -MOCU
+                mocu_estimate = critic(final_state_data, history_tensor)  # [1] - predicts terminal MOCU
+                mocu_estimate_val = mocu_estimate.item()
+                
+                # Convert critic prediction to improvement-based baseline
+                # Reward = (initial_MOCU - terminal_MOCU) * scale
+                # Critic baseline = (initial_MOCU - critic_prediction) * scale
+                if initial_MOCU is not None:
+                    critic_baseline = (initial_MOCU - mocu_estimate_val) * reward_scale
+                else:
+                    # Fallback: use absolute MOCU (shouldn't happen if initial_MOCU was computed)
+                    critic_baseline = -mocu_estimate_val * reward_scale
         
         # Compute advantage using critic baseline (if available) or reward normalization
         if critic_baseline is not None:
@@ -1028,54 +1077,93 @@ def main():
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Load MPNN predictor for critic (if using critic)
-    mpnn_model = None
-    mpnn_mean = None
-    mpnn_std = None
-    # NOTE: MPNN loading is handled separately for per-step rewards (if needed)
-    # We intentionally do NOT load MPNN for the critic (see critic initialization below)
-    # MPNN is still used for pre-computed rewards (terminal_MOCU) and per-step rewards
-    # but NOT for the critic baseline to prevent vanishing advantages
+    # Load MPNN predictor for critic (if using critic) - iDAD paper approach
+    # In iDAD paper, critic uses EIG estimate function (similar to MPNN) as base prediction
+    mpnn_model_for_critic = None
+    mpnn_mean_for_critic = None
+    mpnn_std_for_critic = None
     
     # Create critic network (iDAD-inspired for variance reduction)
-    # SOLUTION 2: Critic WITHOUT MPNN to prevent it from becoming too accurate
-    # - MPNN is still used for pre-computed rewards (terminal_MOCU) - GOOD
-    # - Critic learns from scratch (no MPNN) - prevents vanishing advantages
-    # - Critic will be less accurate than MPNN, providing good advantage signal
+    # iDAD approach: Critic uses fast approximation (MPNN) + adjustment based on history
+    # This aligns with iDAD paper where critic uses EIG estimate function
     critic = None
     critic_optimizer = None
     if args.use_critic:
         from src.models.critics import MOCUCritic
-        # Intentionally set mpnn_model=None to prevent critic from being too accurate
-        # This ensures advantages don't vanish (advantage = reward - critic)
-        # MPNN is still used for pre-computed rewards, just not in critic baseline
+        
+        # Load MPNN predictor for critic (iDAD paper approach)
+        # MPNN provides base MOCU estimate, critic learns to adjust it based on history
+        try:
+            from src.models.predictors.predictor_utils import load_mpnn_predictor
+            import os
+            
+            # Get model name from environment variable, config, or auto-detect
+            model_name = os.getenv('MOCU_MODEL_NAME') or config.get('mocu_model_name')
+            
+            # Auto-detect from output_dir if not provided
+            if not model_name and args.output_dir:
+                output_path = Path(args.output_dir).resolve()
+                parts = output_path.parts
+                try:
+                    models_idx = list(parts).index('models')
+                    if models_idx + 1 < len(parts):
+                        config_part = parts[models_idx + 1]
+                        model_name = config_part
+                except (ValueError, IndexError):
+                    pass
+            
+            # Last resort: try default name format
+            if not model_name:
+                model_name = f'cons{N}'
+            
+            print(f"[iDAD Critic] Loading MPNN predictor for critic: {model_name}")
+            mpnn_model_for_critic, mpnn_mean_for_critic, mpnn_std_for_critic = load_mpnn_predictor(
+                model_name=model_name, device=str(device)
+            )
+            
+            if mpnn_model_for_critic is not None:
+                mpnn_model_for_critic.eval()
+                mpnn_model_for_critic = mpnn_model_for_critic.to(device)
+                print(f"[iDAD Critic] ✓ MPNN predictor loaded successfully")
+            else:
+                print(f"[iDAD Critic] ⚠ MPNN predictor not found, critic will learn from scratch")
+        except Exception as e:
+            print(f"[iDAD Critic] ⚠ Failed to load MPNN predictor: {e}")
+            print(f"[iDAD Critic]   Critic will learn from scratch (fallback)")
+            mpnn_model_for_critic = None
+        
+        # Create critic with MPNN (iDAD paper approach)
+        # Critic uses MPNN as base prediction, then adjusts based on history
         critic = MOCUCritic(
             N=N,
             hidden_dim=args.hidden_dim,
             encoding_dim=args.encoding_dim,
             use_set_equivariant=False,  # Use LSTM encoder (order-dependent, necessary when order matters)
-            mpnn_model=None,  # Intentionally None - critic learns from scratch
-            mpnn_mean=None,  # Not needed when mpnn_model is None
-            mpnn_std=None  # Not needed when mpnn_model is None
+            mpnn_model=mpnn_model_for_critic,  # Use MPNN like iDAD uses EIG estimate function
+            mpnn_mean=mpnn_mean_for_critic,
+            mpnn_std=mpnn_std_for_critic
         )
         critic = critic.to(device)
         print(f"Critic parameters: {sum(p.numel() for p in critic.parameters()):,}")
         
         # Use lower learning rate for critic (2-5x lower than policy) for stability
-        # Critic learning from scratch needs slower updates to avoid interference with policy
+        # Critic adjusts MPNN predictions, needs slower updates to avoid interference with policy
         if args.critic_lr is not None:
             critic_lr = args.critic_lr
         else:
-            # Default: 0.25x policy LR for stability (reduced from 0.5x to prevent critic learning too fast)
-            # Lower critic LR prevents vanishing advantages when loss is increasing
+            # Default: 0.25x policy LR for stability
             critic_lr = args.lr * 0.25
         critic_optimizer = torch.optim.Adam(critic.parameters(), lr=critic_lr)
         print(f"Using critic network for variance reduction (iDAD-inspired)")
         print(f"  Critic LR: {critic_lr}")
-        print(f"  Pre-trained MPNN: DISABLED in critic (intentional)")
-        print(f"    → Critic learns from scratch (no MPNN)")
-        print(f"    → Critic will be less accurate → good advantage signal")
-        print(f"    → MPNN still used for pre-computed rewards (terminal_MOCU)")
+        if mpnn_model_for_critic is not None:
+            print(f"  Pre-trained MPNN: ENABLED in critic (iDAD paper approach)")
+            print(f"    → Critic uses MPNN as base prediction (like EIG estimate in iDAD)")
+            print(f"    → Critic learns to adjust MPNN predictions based on history")
+            print(f"    → This aligns with iDAD paper architecture")
+        else:
+            print(f"  Pre-trained MPNN: DISABLED (fallback - MPNN not available)")
+            print(f"    → Critic learns from scratch")
     
     # Optimizer with learning rate scheduling
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)

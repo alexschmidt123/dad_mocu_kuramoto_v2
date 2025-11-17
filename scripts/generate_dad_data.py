@@ -22,6 +22,8 @@ from pathlib import Path
 import time
 import argparse
 import random
+import json
+import os
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -333,6 +335,16 @@ def main():
     # Check if MOCU values were computed
     has_mocu = any('terminal_MOCU' in traj for traj in trajectories)
     
+    # Initialize diagnostic dictionary to save
+    diagnostics = {
+        'has_mocu': bool(has_mocu),
+        'num_trajectories': len(trajectories),
+        'N': args.N,
+        'K': args.K,
+        'num_episodes': args.num_episodes,
+        'mpnn_model_used': args.mpnn_model_name if args.use_mpnn_predictor else None
+    }
+    
     # Diagnostic: Check MOCU variance and trajectory diversity in generated data
     if has_mocu:
         mocu_values = [traj.get('terminal_MOCU', None) for traj in trajectories if 'terminal_MOCU' in traj]
@@ -342,6 +354,17 @@ def main():
             mocu_std = np.std(mocu_array)
             mocu_min = np.min(mocu_array)
             mocu_max = np.max(mocu_array)
+            
+            # Save to diagnostics
+            diagnostics['mocu_stats'] = {
+                'count': len(mocu_values),
+                'mean': float(mocu_mean),
+                'std': float(mocu_std),
+                'min': float(mocu_min),
+                'max': float(mocu_max),
+                'variance': float(np.var(mocu_array))
+            }
+            
             print(f"\n[DIAGNOSTIC] Terminal MOCU statistics in generated data:")
             print(f"  Count: {len(mocu_values)}")
             print(f"  Mean: {mocu_mean:.6f}")
@@ -374,6 +397,13 @@ def main():
                 avg_lower_var = np.mean(lower_var[lower_var > 0])  # Exclude diagonal (always 0)
                 avg_upper_var = np.mean(upper_var[upper_var > 0])
                 
+                # Save to diagnostics
+                diagnostics['bounds_diversity'] = {
+                    'avg_lower_bound_variance': float(avg_lower_var),
+                    'avg_upper_bound_variance': float(avg_upper_var),
+                    'has_diverse_bounds': bool(avg_lower_var > 1e-6 and avg_upper_var > 1e-6)
+                }
+                
                 print(f"  Final bounds variance:")
                 print(f"    Avg lower bound variance: {avg_lower_var:.8f}")
                 print(f"    Avg upper bound variance: {avg_upper_var:.8f}")
@@ -390,6 +420,14 @@ def main():
             unique_sequences = len(set(action_sequences))
             total_sequences = len(action_sequences)
             diversity_ratio = unique_sequences / total_sequences if total_sequences > 0 else 0.0
+            
+            # Save to diagnostics
+            diagnostics['action_diversity'] = {
+                'unique_sequences': unique_sequences,
+                'total_sequences': total_sequences,
+                'diversity_ratio': float(diversity_ratio),
+                'has_good_diversity': bool(diversity_ratio >= 0.5)
+            }
             
             print(f"  Action sequence diversity:")
             print(f"    Unique sequences: {unique_sequences}/{total_sequences}")
@@ -432,6 +470,31 @@ def main():
                 print(f"\n  [WARNING] All terminal MOCU values are nearly identical!")
                 print(f"  This will cause zero reward variance during REINFORCE training.")
                 print(f"  See analysis above for root cause and solution.")
+                diagnostics['warning'] = "All terminal MOCU values are nearly identical - will cause zero reward variance"
+            else:
+                diagnostics['warning'] = None
+            
+            # Add overall assessment (after all diagnostics are set)
+            bounds_ok = diagnostics.get('bounds_diversity', {}).get('has_diverse_bounds', False) if 'bounds_diversity' in diagnostics else False
+            action_ok = diagnostics.get('action_diversity', {}).get('has_good_diversity', False) if 'action_diversity' in diagnostics else False
+            diagnostics['assessment'] = {
+                'mocu_variance_ok': bool(mocu_std >= 1e-6),
+                'bounds_diversity_ok': bool(bounds_ok),
+                'action_diversity_ok': bool(action_ok),
+                'ready_for_training': bool(mocu_std >= 1e-6)
+            }
+    
+    # Save diagnostics to JSON file (non-fatal - don't fail if this errors)
+    # Save to output_dir (experiment folder) - each experiment has its own diagnostics
+    diagnostics_file = output_dir / 'dad_data_generation_diagnostics.json'
+    try:
+        diagnostics_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(diagnostics_file, 'w') as f:
+            json.dump(diagnostics, f, indent=2)
+        print(f"\n[INFO] ✓ Diagnostic information saved to: {diagnostics_file}")
+    except Exception as e:
+        print(f"\n[WARNING] Failed to save diagnostics: {e}")
+        print(f"  Trajectory data is still valid and saved successfully")
     
     torch.save({
         'trajectories': trajectories,
