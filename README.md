@@ -5,11 +5,9 @@ This project implements Deep Adaptive Design (DAD) and Implicit Deep Adaptive De
 ## Hardware and Environment Setup
 
 **Hardware**:
-- **Hardware Model**: Alienware Aurora R16
 - **Processor**: 13th Gen Intel® Core™ i7-13700F (24 cores)
 - **Memory**: 64.0 GiB
 - **Graphics**: NVIDIA GeForce RTX 4090 (24GB)
-- **Storage**: 2.0 TB
 - **OS**: Ubuntu 22.04.5 LTS (64-bit)
 
 **Create conda environment and install dependencies**:
