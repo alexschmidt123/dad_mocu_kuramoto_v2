@@ -101,13 +101,26 @@ class DADPolicyNetwork(nn.Module):
             raise ValueError(f"history_encoder_type must be 'lstm', 'sum', or 'cat', got {history_encoder_type}")
         
         # ========== Action Decoder ==========
+        # Enhanced decoder that can use expected MOCU features if provided
+        # Input: state_emb + history_emb + (optional) expected_mocu_features
         self.action_decoder = nn.Sequential(
-            Linear(hidden_dim * 2, hidden_dim),  # State + history
+            Linear(hidden_dim * 2, hidden_dim),  # State + history (base)
             ReLU(),
             nn.Dropout(0.1),
             Linear(hidden_dim, hidden_dim),
             ReLU(),
             Linear(hidden_dim, self.num_actions)  # Logits for each pair
+        )
+        
+        # Alternative decoder that incorporates expected MOCU features
+        # This is used when expected_mocu_features are provided (enhanced mode)
+        self.action_decoder_with_mocu = nn.Sequential(
+            Linear(hidden_dim * 2 + 1, hidden_dim),  # State + history + expected_mocu (per action)
+            ReLU(),
+            nn.Dropout(0.1),
+            Linear(hidden_dim, hidden_dim),
+            ReLU(),
+            Linear(hidden_dim, 1)  # Single logit per action (will be stacked)
         )
     
     def encode_state(self, state_data):
@@ -308,7 +321,8 @@ class DADPolicyNetwork(nn.Module):
             return cat_encoding  # [batch, max_history_len * encoding_dim]
 
 
-    def forward(self, state_data, history_data=None, available_actions_mask=None):
+    def forward(self, state_data, history_data=None, available_actions_mask=None, 
+                expected_mocu_features=None):
         """
         Forward pass: compute action logits.
         
@@ -317,6 +331,9 @@ class DADPolicyNetwork(nn.Module):
             history_data: History of (i, j, obs) tuples [batch_size, seq_len, 3]
             available_actions_mask: Binary mask for available actions [batch_size, num_actions]
                                    1 = available, 0 = already observed
+            expected_mocu_features: Optional [batch_size, num_actions] tensor with expected MOCU
+                                   for each action (like INN/NN R-matrix values)
+                                   If provided, uses enhanced decoder that incorporates this info
         
         Returns:
             action_logits: [batch_size, num_actions]
@@ -341,10 +358,33 @@ class DADPolicyNetwork(nn.Module):
             history_emb = self.history_proj(history_emb)  # [batch, hidden_dim]
         
         # Combine state and history
-        combined = torch.cat([state_emb, history_emb], dim=-1)  # [batch_size, hidden_dim*2]
+        combined_base = torch.cat([state_emb, history_emb], dim=-1)  # [batch_size, hidden_dim*2]
         
-        # Decode to action logits
-        action_logits = self.action_decoder(combined)  # [batch_size, num_actions]
+        # Use enhanced decoder if expected MOCU features are provided
+        if expected_mocu_features is not None:
+            # Enhanced mode: incorporate expected MOCU for each action
+            # For each action, combine base features with its expected MOCU
+            batch_size = combined_base.size(0)
+            num_actions = expected_mocu_features.size(1)
+            
+            # Expand base features for each action: [batch, num_actions, hidden_dim*2]
+            combined_base_expanded = combined_base.unsqueeze(1).expand(-1, num_actions, -1)
+            
+            # Add expected MOCU feature: [batch, num_actions, hidden_dim*2+1]
+            expected_mocu_expanded = expected_mocu_features.unsqueeze(-1)  # [batch, num_actions, 1]
+            combined_with_mocu = torch.cat([combined_base_expanded, expected_mocu_expanded], dim=-1)
+            
+            # Reshape for batch processing: [batch*num_actions, hidden_dim*2+1]
+            combined_flat = combined_with_mocu.view(batch_size * num_actions, -1)
+            
+            # Process through enhanced decoder: [batch*num_actions, 1]
+            action_logits_flat = self.action_decoder_with_mocu(combined_flat)
+            
+            # Reshape back: [batch, num_actions]
+            action_logits = action_logits_flat.view(batch_size, num_actions)
+        else:
+            # Standard mode: use base decoder
+            action_logits = self.action_decoder(combined_base)  # [batch_size, num_actions]
         
         # Apply mask to prevent selecting already observed pairs
         if available_actions_mask is not None:
@@ -357,7 +397,7 @@ class DADPolicyNetwork(nn.Module):
         return action_logits, action_probs
     
     def select_action(self, state_data, history_data=None, available_actions_mask=None, 
-                     deterministic=False):
+                     deterministic=False, expected_mocu_features=None):
         """
         Select an action based on the current policy.
         
@@ -366,13 +406,17 @@ class DADPolicyNetwork(nn.Module):
             history_data: History of decisions
             available_actions_mask: Mask for available actions
             deterministic: If True, select argmax; if False, sample from distribution
+            expected_mocu_features: Optional expected MOCU features for each action
         
         Returns:
             action_idx: Selected action index
             log_prob: Log probability of the selected action
             action_pair: (i, j) tuple corresponding to action_idx
         """
-        action_logits, action_probs = self.forward(state_data, history_data, available_actions_mask)
+        action_logits, action_probs = self.forward(
+            state_data, history_data, available_actions_mask, 
+            expected_mocu_features=expected_mocu_features
+        )
         
         if deterministic:
             action_idx = torch.argmax(action_probs, dim=-1)

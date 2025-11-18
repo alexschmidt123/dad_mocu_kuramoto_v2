@@ -217,7 +217,7 @@ def train_imitation(model, dataloader, optimizer, device, N):
 def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max=20480, 
                     use_baseline=True, mocu_model=None, mocu_mean=None, mocu_std=None, use_predicted_mocu=False,
                     epoch_num=None, entropy_coef=0.01, critic=None, critic_optimizer=None,
-                    use_per_step_reward=True, per_step_weight=0.3):
+                    use_per_step_reward=True, per_step_weight=0.3, K=None, use_time_weighting=True):
     """
     Train using REINFORCE policy gradient with MOCU DIRECTLY as the loss.
     
@@ -226,8 +226,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                      Prevents policy from becoming too deterministic
         use_per_step_reward: If True, compute MOCU at each step and reward per-step reductions
                             This encourages early-step efficiency (fixes "wasting first steps" issue)
-        per_step_weight: Weight for per-step rewards (0.0-1.0, rest goes to terminal)
+        per_step_weight: Base weight for per-step rewards (0.0-1.0, rest goes to terminal)
                         e.g., 0.3 = 30% per-step, 70% terminal
+                        For K < 7, this is automatically increased to emphasize early steps
+        K: Number of sequential experiments (used for time-weighted rewards and per_step_weight adjustment)
+        use_time_weighting: If True and K < 7, apply exponential discount to early steps
+                          Earlier steps get higher weight (gamma_step=0.9)
     """
     from scripts.generate_dad_data import update_bounds
     
@@ -487,13 +491,46 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                     step_reward = mocu_reduction * reward_scale  # Positive reward for reduction
                     per_step_rewards.append(step_reward)
                 
-                # Total per-step reward (sum of all step reductions)
-                total_per_step_reward = sum(per_step_rewards)
+                # IMPROVEMENT: Time-weighted rewards for limited budgets (K < 7)
+                # Early steps are more important when budget is limited
+                if use_time_weighting and K is not None and K < 7:
+                    # Exponential discount: earlier steps get higher weight
+                    # For K=4: weights = [0.9^3, 0.9^2, 0.9^1, 0.9^0] = [0.729, 0.81, 0.9, 1.0]
+                    # Normalized so sum = 1
+                    gamma_step = 0.9  # Discount factor per step
+                    step_weights = []
+                    for i in range(len(per_step_rewards)):
+                        # Earlier steps (smaller i) get higher weight
+                        weight = gamma_step ** (len(per_step_rewards) - i - 1)
+                        step_weights.append(weight)
+                    
+                    # Normalize weights
+                    weight_sum = sum(step_weights)
+                    step_weights = [w / weight_sum for w in step_weights]
+                    
+                    # Apply time-weighted rewards
+                    weighted_rewards = [r * w for r, w in zip(per_step_rewards, step_weights)]
+                    total_per_step_reward = sum(weighted_rewards)
+                    
+                    if epoch_num is not None and epoch_num == 0:
+                        print(f"[REINFORCE] Using time-weighted rewards for K={K} (limited budget)")
+                        print(f"[REINFORCE] Step weights: {[f'{w:.3f}' for w in step_weights]}")
+                else:
+                    # Standard: equal weight for all steps
+                    total_per_step_reward = sum(per_step_rewards)
                 
                 # Weighted combination: per_step_weight * per_step + (1-weight) * terminal
-                # This gives explicit credit to early steps while still optimizing terminal MOCU
-                reward = (per_step_weight * total_per_step_reward + 
-                         (1.0 - per_step_weight) * terminal_reward)
+                # For limited budgets (K < 7), increase per_step_weight to emphasize early steps
+                effective_per_step_weight = per_step_weight
+                if K is not None and K < 7:
+                    # Increase per-step weight for smaller K (more emphasis on early steps)
+                    # K=1: 0.9, K=2: 0.8, K=3: 0.7, K=4: 0.6, K=5: 0.5, K=6: 0.45
+                    effective_per_step_weight = max(0.9 - 0.1 * (K - 1), 0.4)
+                    if epoch_num is not None and epoch_num == 0:
+                        print(f"[REINFORCE] Adjusted per_step_weight: {per_step_weight} -> {effective_per_step_weight} (K={K})")
+                
+                reward = (effective_per_step_weight * total_per_step_reward + 
+                         (1.0 - effective_per_step_weight) * terminal_reward)
                 
                 # Store per-step rewards for step-wise advantages
                 step_rewards_list = per_step_rewards
@@ -1166,22 +1203,32 @@ def main():
             print(f"  Pre-trained MPNN: DISABLED (fallback - MPNN not available)")
             print(f"    → Critic learns from scratch")
     
+    # Warn if learning rate is too small (likely to cause training issues)
+    if args.lr < 1e-5:
+        print(f"\n⚠️  WARNING: Learning rate is very small ({args.lr:.2e})!")
+        print(f"   This may prevent effective learning.")
+        print(f"   Recommended: ≥ 1e-5 (default: 1e-4)")
+        print(f"   Consider using --lr 0.0001 or --lr 0.00005\n")
+    
     # Optimizer with learning rate scheduling
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     
     # Learning rate scheduler: reduce LR when loss plateaus
     # This helps prevent overfitting and stabilizes training
+    # Use higher min_lr to prevent LR from becoming too small
+    min_lr = max(1e-6, args.lr * 0.01)  # At least 1% of initial LR, but not below 1e-6
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=10, 
-        verbose=True, min_lr=1e-6
+        verbose=True, min_lr=min_lr
     )
     
     # Critic scheduler (if using critic)
     critic_scheduler = None
     if critic is not None:
+        critic_min_lr = max(1e-6, critic_lr * 0.01)  # At least 1% of initial LR, but not below 1e-6
         critic_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             critic_optimizer, mode='min', factor=0.5, patience=10,
-            verbose=True, min_lr=1e-6
+            verbose=True, min_lr=critic_min_lr
         )
     
     # Early stopping: stop if no improvement for N epochs
@@ -1440,7 +1487,9 @@ def main():
                 critic=critic,
                 critic_optimizer=critic_optimizer,
                 use_per_step_reward=True,  # Enable per-step rewards to fix "wasting first steps"
-                per_step_weight=0.4  # 40% per-step, 60% terminal (increased from 0.3 to encourage more exploration)
+                per_step_weight=0.4,  # Base weight (will be adjusted for K < 7)
+                K=K,  # Pass K for time-weighted rewards
+                use_time_weighting=True  # Enable time-weighting for limited budgets
             )
             train_losses.append(loss)
             current_loss = train_losses[-1]

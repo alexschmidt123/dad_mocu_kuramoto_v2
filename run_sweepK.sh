@@ -22,7 +22,9 @@ CONFIG_FILE=$1
 if [ -z "$CONFIG_FILE" ]; then
     echo "Usage: $0 <config_file> [K_values...]"
     echo "Example: $0 configs/N5_config.yaml"
-    echo "         $0 configs/N5_config.yaml 4 6 8 10"
+    echo "         (default: sweeps K=1,2,3,4,5,6,7)"
+    echo "         $0 configs/N5_config.yaml 2 4 6"
+    echo "         (custom: sweeps K=2,4,6)"
     exit 1
 fi
 
@@ -45,11 +47,12 @@ N=$(grep "^N:" "$CONFIG_FILE" | awk '{print $2}')
 declare -a SWEEP_EXPERIMENTS=()
 
 # K values to sweep (use command line args if provided, otherwise default)
+# Default: sweep K from 1 to 7 (limited budgets where DAD might beat greedy)
 if [ $# -gt 1 ]; then
     shift  # Remove config_file from args
     K_VALUES=("$@")
 else
-    K_VALUES=(4 6 8 10)
+    K_VALUES=(1 2 3 4 5 6 7)
 fi
 
 echo "=========================================="

@@ -44,10 +44,11 @@ experiment:
 
 # DAD policy training data generation
 dad_data:
-  num_episodes: 10000      # Number of trajectories to generate (increased for better performance)
-                           # iDAD uses ~205M samples (on-the-fly), we use 10K pre-generated trajectories
+  num_episodes: 20000      # Number of trajectories to generate (increased for better performance)
+                           # iDAD uses ~205M samples (on-the-fly), we use 20K pre-generated trajectories
                            # Can increase further if needed (50K-100K for better performance)
   K: 10                    # K: Number of sequential experiments per trajectory (must match experiment.update_count)
+                           # Note: Will be overridden by K sweep script (K ∈ [2,4,6])
   use_precomputed_mocu: true  # Pre-compute terminal MOCU using MPNN predictor (recommended, avoids CUDA conflicts)
 
 # Paths (relative to project root)
