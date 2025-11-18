@@ -854,16 +854,12 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
             # Perform backward pass
             # REMOVED: Extra try-except nesting - simplified error handling
             loss.backward(retain_graph=False)
-        except RuntimeError as backward_error:
+        except RuntimeError as e:
             # PyTorch's backward may raise RuntimeError for CUDA errors
             print(f"\n{'='*80}")
             print(f"[BACKWARD ERROR] RuntimeError during backward pass:")
-            print(f"[BACKWARD ERROR] {backward_error}")
+            print(f"[BACKWARD ERROR] {e}")
             print(f"[BACKWARD ERROR] This indicates a CUDA error in autograd engine")
-            print(f"{'='*80}\n")
-            raise
-        except RuntimeError as e:
-            print(f"[REINFORCE] ERROR during backward: {e}")
             if torch.cuda.is_available():
                 print(f"[REINFORCE] CUDA error info:")
                 print(f"  - Device count: {torch.cuda.device_count()}")
@@ -875,6 +871,7 @@ def train_reinforce(model, trajectories, optimizer, device, N, gamma=0.96, K_max
                     pass
                 except:
                     print("[REINFORCE] CUDA state query failed - context may be corrupted")
+            print(f"{'='*80}\n")
             raise
         except Exception as e:
             # Catch any other exception (including potential segfault precursors)
